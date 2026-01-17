@@ -1,4 +1,4 @@
-use crate::{bezier, EdgesCtx};
+use crate::{bezier, EdgesCtx, NodeId};
 
 /// A simple bezier-curve Edge widget.
 ///
@@ -11,7 +11,7 @@ use crate::{bezier, EdgesCtx};
 /// - Hovered: `ui.visuals().widgets.hovered.fg_stroke`.
 /// - Otherwise: `ui.visuals().widgets.noninteractive.fg_stroke`.
 pub struct Edge<'a> {
-    edge: ((egui::Id, OutputIx), (egui::Id, InputIx)),
+    edge: ((NodeId, OutputIx), (NodeId, InputIx)),
     distance_per_point: f32,
     selected: &'a mut bool,
 }
@@ -38,7 +38,7 @@ impl<'a> Edge<'a> {
     pub const DEFAULT_DISTANCE_PER_POINT: f32 = 5.0;
 
     /// An edge from node `a`'s output socket to node `b`'s input socket.
-    pub fn new(a: (egui::Id, OutputIx), b: (egui::Id, InputIx), selected: &'a mut bool) -> Self {
+    pub fn new(a: (NodeId, OutputIx), b: (NodeId, InputIx), selected: &'a mut bool) -> Self {
         Self {
             edge: (a, b),
             distance_per_point: Self::DEFAULT_DISTANCE_PER_POINT,

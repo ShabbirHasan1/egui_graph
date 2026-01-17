@@ -1,6 +1,6 @@
 //! Items related to automated layout of nodes.
 
-use crate::Layout;
+use crate::{Layout, NodeId};
 use egui::Direction;
 use layout::{
     core::{base::Orientation, geometry::Point, style::*},
@@ -13,8 +13,8 @@ use std::collections::HashMap;
 ///
 /// Returns a `Layout` object representing the positions of nodes in the graph.
 pub fn layout(
-    nodes: impl IntoIterator<Item = (egui::Id, egui::Vec2)>,
-    edges: impl IntoIterator<Item = (egui::Id, egui::Id)>,
+    nodes: impl IntoIterator<Item = (NodeId, egui::Vec2)>,
+    edges: impl IntoIterator<Item = (NodeId, NodeId)>,
     flow: egui::Direction,
 ) -> Layout {
     let orientation = match flow {

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "layout")]
 pub use layout::layout;
+pub use node::NodeId;
 
 pub mod bezier;
 pub mod edge;
@@ -38,19 +39,19 @@ pub struct GraphTempMemory {
     /// Collect information about the layout of each node's sockets during node instantiation.
     ///
     /// This is used to provide the position and normal of each socket when instantiating edges.
-    sockets: HashMap<egui::Id, NodeSockets>,
+    sockets: HashMap<NodeId, NodeSockets>,
     /// The socket that is currently closest to the mouse.
     ///
     /// Always `Some` while the pointer is over the graph area, `None` otherwise.
     closest_socket: Option<node::Socket>,
 }
 
-type NodeSizes = HashMap<egui::Id, egui::Vec2>;
+type NodeSizes = HashMap<NodeId, egui::Vec2>;
 
 #[derive(Clone, Default)]
 struct Selection {
     /// The set of currently selected nodes.
-    nodes: HashSet<egui::Id>,
+    nodes: HashSet<NodeId>,
 }
 
 /// State related to the last press of the primary pointer button over the graph.
@@ -89,8 +90,8 @@ enum PressAction {
 
 #[derive(Clone, Debug)]
 struct PressedNode {
-    /// Unique Id of th node.
-    id: egui::Id,
+    /// Unique Id of the node.
+    id: NodeId,
     /// The position of the node over the graph at the origin of the press.
     position_at_origin: egui::Pos2,
 }
@@ -107,7 +108,7 @@ pub struct View {
 }
 
 /// The location of the top-left of each node relative to the centre of the graph area.
-pub type Layout = HashMap<egui::Id, egui::Pos2>;
+pub type Layout = HashMap<NodeId, egui::Pos2>;
 
 /// The context returned by the `Graph` widget. Allows for setting nodes and edges.
 pub struct Show<'a> {
@@ -126,7 +127,7 @@ pub struct Show<'a> {
     /// Track all nodes that were visited this update.
     ///
     /// We will use this to remove old node state on `drop`.
-    visited: &'a mut HashSet<egui::Id>,
+    visited: &'a mut HashSet<NodeId>,
     layout: &'a mut Layout,
 }
 
@@ -153,7 +154,7 @@ pub struct NodesCtx<'a> {
     selection_rect: Option<egui::Rect>,
     select: bool,
     socket_press_released: Option<node::Socket>,
-    visited: &'a mut HashSet<egui::Id>,
+    visited: &'a mut HashSet<NodeId>,
     layout: &'a mut Layout,
 }
 
@@ -188,13 +189,18 @@ impl Graph {
 
     /// Begin building the new graph widget.
     pub fn new(id_src: impl Hash) -> Self {
+        Self::from_id(id(id_src))
+    }
+
+    /// The same as [`Graph::new`], but allows providing an `egui::Id` directly.
+    pub fn from_id(id: egui::Id) -> Self {
         Self {
             background: true,
             dot_grid: true,
             zoom_range: Self::DEFAULT_ZOOM_RANGE,
             max_inner_size: None,
             center_view: Self::DEFAULT_CENTER_VIEW,
-            id: id(id_src),
+            id,
         }
     }
 
@@ -485,7 +491,7 @@ impl<'a> Show<'a> {
 
 /// If a node didn't appear this update, it's likely because the user has
 /// removed the node from their graph, so we should stop tracking it.
-fn prune_unused_nodes(graph_id: egui::Id, visited: &HashSet<egui::Id>, ui: &mut egui::Ui) {
+fn prune_unused_nodes(graph_id: egui::Id, visited: &HashSet<NodeId>, ui: &mut egui::Ui) {
     let gmem_arc = memory(ui, graph_id);
     let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
     gmem.node_sizes.retain(|k, _| visited.contains(k));
@@ -517,7 +523,7 @@ impl EdgesCtx {
     pub fn input(
         &self,
         ui: &egui::Ui,
-        node: egui::Id,
+        node: NodeId,
         input: usize,
     ) -> Option<(egui::Pos2, egui::Vec2)> {
         let gmem_arc = crate::memory(ui, self.graph_id);
@@ -533,7 +539,7 @@ impl EdgesCtx {
     pub fn output(
         &self,
         ui: &egui::Ui,
-        node: egui::Id,
+        node: NodeId,
         output: usize,
     ) -> Option<(egui::Pos2, egui::Vec2)> {
         let gmem_arc = memory(ui, self.graph_id);
@@ -842,7 +848,7 @@ pub fn id(id_src: impl Hash) -> egui::Id {
 }
 
 /// Checks if a node with the given ID is currently selected in the specified graph.
-pub fn is_node_selected(ui: &egui::Ui, graph_id: egui::Id, node_id: egui::Id) -> bool {
+pub fn is_node_selected(ui: &egui::Ui, graph_id: egui::Id, node_id: NodeId) -> bool {
     let gmem_arc = memory(ui, graph_id);
     let gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
     gmem.selection.nodes.contains(&node_id)

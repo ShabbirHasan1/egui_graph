@@ -2,12 +2,17 @@ use crate::NodesCtx;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
+/// Derive the `egui::Id` used internally for a node's egui state (layers, area_rect, etc).
+pub fn egui_id(graph_id: egui::Id, node_id: NodeId) -> egui::Id {
+    graph_id.with(node_id.0)
+}
+
 /// The default node widget.
 ///
 /// A `Node` is a thin wrapper around a `Window` and allows for instantiating arbitrary widgets
 /// internally.
 pub struct Node {
-    id: egui::Id,
+    id: NodeId,
     frame: Option<egui::Frame>,
     inputs: usize,
     outputs: usize,
@@ -17,6 +22,15 @@ pub struct Node {
     max_width: Option<f32>,
     animation_time: f32,
 }
+
+/// A unique identifier for a node within a graph.
+///
+/// This is decoupled from `egui::Id` to allow node identity to remain stable
+/// even when the graph's egui ID context changes (e.g., when viewing the same
+/// graph through different heads or paths).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct NodeId(pub u64);
 
 /// Describes either an input or output.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -29,7 +43,7 @@ pub enum SocketKind {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Socket {
     /// The node that owns this socket.
-    pub node: egui::Id,
+    pub node: NodeId,
     /// Whether the socket is an input or output.
     pub kind: SocketKind,
     /// The index of the socket of this kind.
@@ -71,11 +85,11 @@ pub enum EdgeEvent {
 impl Node {
     /// Begin instantiating a new node widget.
     pub fn new(id_src: impl Hash) -> Self {
-        Self::from_id(egui::Id::new(id_src))
+        Self::from_id(NodeId::new(id_src))
     }
 
-    // Construct the node directly from its `egui::Id`.
-    pub fn from_id(id: egui::Id) -> Self {
+    /// Construct the node directly from its `NodeId`.
+    pub fn from_id(id: NodeId) -> Self {
         Self {
             id,
             frame: None,
@@ -196,8 +210,8 @@ impl Node {
             self.animation_time
         };
         let pos_graph = {
-            let idx = ctx.graph_id.with(self.id).with("x");
-            let idy = ctx.graph_id.with(self.id).with("y");
+            let idx = ctx.graph_id.with(self.id.0).with("x");
+            let idy = ctx.graph_id.with(self.id.0).with("y");
             let ctx = ui.ctx();
             let x = ctx.animate_value_with_time(idx, target_pos_graph.x, animation_time);
             let y = ctx.animate_value_with_time(idy, target_pos_graph.y, animation_time);
@@ -293,7 +307,7 @@ impl Node {
 
         // Put the node's frame on a layer above the scene's UI layer.
         let scene_layer = ui.layer_id();
-        let frame_layer = egui::LayerId::new(scene_layer.order, ctx.graph_id.with(self.id));
+        let frame_layer = egui::LayerId::new(scene_layer.order, ctx.graph_id.with(self.id.0));
         ui.ctx().set_sublayer(scene_layer, frame_layer);
         if let Some(transform) = ui.ctx().layer_transform_to_global(scene_layer) {
             ui.ctx().set_transform_layer(frame_layer, transform);
@@ -570,6 +584,32 @@ impl Node {
             removed,
             edge_event,
         }
+    }
+}
+
+impl NodeId {
+    /// Create a new NodeId by hashing any hashable value.
+    pub fn new(id_src: impl Hash) -> Self {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        id_src.hash(&mut hasher);
+        NodeId(hasher.finish())
+    }
+
+    /// Create a NodeId directly from a u64.
+    pub const fn from_u64(v: u64) -> Self {
+        NodeId(v)
+    }
+
+    /// Get the raw u64 value.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for NodeId {
+    fn from(v: u64) -> Self {
+        NodeId(v)
     }
 }
 

@@ -28,7 +28,7 @@ struct State {
     #[cfg(feature = "layout")]
     auto_layout: bool,
     node_spacing: [f32; 2],
-    node_id_map: HashMap<egui::Id, NodeIndex>,
+    node_id_map: HashMap<egui_graph::NodeId, NodeIndex>,
     center_view: bool,
     dot_grid: bool,
 }
@@ -124,6 +124,11 @@ fn node(name: impl ToString, kind: NodeKind) -> Node {
     Node { name, kind }
 }
 
+/// Get the egui::Id for the demo graph widget.
+fn graph_id() -> egui::Id {
+    egui_graph::id("Demo Graph")
+}
+
 #[cfg(feature = "layout")]
 fn layout(
     graph: &Graph,
@@ -131,19 +136,27 @@ fn layout(
     node_spacing: [f32; 2],
     ctx: &egui::Context,
 ) -> egui_graph::Layout {
+    let graph_id = graph_id();
     ctx.memory(|m| {
         let nodes = graph.node_indices().map(|n| {
-            let id = egui::Id::new(n);
+            let node_id = egui_graph::NodeId::from_u64(n.index() as u64);
+            // Use the helper to get the egui::Id for area_rect lookup
+            let egui_id = egui_graph::node::egui_id(graph_id, node_id);
             let size = m
-                .area_rect(id)
+                .area_rect(egui_id)
                 .map(|a| a.size())
                 .unwrap_or([200.0, 50.0].into());
-            (id, size)
+            (node_id, size)
         });
         let edges = graph
             .edge_indices()
             .filter_map(|e| graph.edge_endpoints(e))
-            .map(|(a, b)| (egui::Id::new(a), egui::Id::new(b)));
+            .map(|(a, b)| {
+                (
+                    egui_graph::NodeId::from_u64(a.index() as u64),
+                    egui_graph::NodeId::from_u64(b.index() as u64),
+                )
+            });
         let mut layout = egui_graph::layout(nodes, edges, flow);
         // Apply custom offset spacing to the layout
         for pos in layout.values_mut() {
@@ -164,7 +177,7 @@ fn gui(ctx: &egui::Context, view: &mut egui_graph::View, state: &mut State) {
 }
 
 fn graph(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
-    egui_graph::Graph::new("Demo Graph")
+    egui_graph::Graph::from_id(graph_id())
         .center_view(state.center_view)
         .dot_grid(state.dot_grid)
         .show(view, ui, |ui, show| {
@@ -202,9 +215,9 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
             .edges_directed(n, petgraph::Outgoing)
             .fold(0, |max, e| std::cmp::max(max, e.weight().0 + 1));
         let node = &mut state.graph[n];
-        let egui_id = egui::Id::new(n);
-        state.node_id_map.insert(egui_id, n);
-        let response = egui_graph::node::Node::from_id(egui_id)
+        let node_id = egui_graph::NodeId::from_u64(n.index() as u64);
+        state.node_id_map.insert(node_id, n);
+        let response = egui_graph::node::Node::from_id(node_id)
             .inputs(inputs)
             .outputs(outputs)
             .flow(state.flow)
@@ -236,7 +249,7 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
 
         if response.changed() {
             // Update the selected nodes.
-            if egui_graph::is_node_selected(ui, nctx.graph_id, egui_id) {
+            if egui_graph::is_node_selected(ui, nctx.graph_id, node_id) {
                 state.interaction.selection.nodes.insert(n);
             } else {
                 state.interaction.selection.nodes.remove(&n);
@@ -274,7 +287,7 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
             // If the delete key was pressed while selected, remove it.
             if response.removed() {
                 state.graph.remove_node(n);
-                state.node_id_map.remove(&egui_id);
+                state.node_id_map.remove(&node_id);
             }
         }
     }
@@ -285,8 +298,8 @@ fn edges(ectx: &mut egui_graph::EdgesCtx, ui: &mut egui::Ui, state: &mut State) 
     for e in state.graph.edge_indices().collect::<Vec<_>>() {
         let (na, nb) = state.graph.edge_endpoints(e).unwrap();
         let (output, input) = *state.graph.edge_weight(e).unwrap();
-        let a = egui::Id::new(na);
-        let b = egui::Id::new(nb);
+        let a = egui_graph::NodeId::from_u64(na.index() as u64);
+        let b = egui_graph::NodeId::from_u64(nb.index() as u64);
         let mut selected = state.interaction.selection.edges.contains(&e);
         let response =
             egui_graph::edge::Edge::new((a, output), (b, input), &mut selected).show(ectx, ui);
