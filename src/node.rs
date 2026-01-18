@@ -682,7 +682,11 @@ impl<'a> NodeCtx<'a> {
     /// Show content with the default frame styling.
     ///
     /// This consumes the context, ensuring content is only added once.
-    /// Returns the combined response from the frame and content.
+    ///
+    /// Returns the combined response from the frame and content area. This response:
+    /// - Has a rect covering the entire framed area.
+    /// - Reports interactions (clicks, drags, hovers) on any part of the node.
+    /// - Is used by [`Node::show`] for selection and drag handling.
     ///
     /// For custom frame styling, use [`NodeCtx::framed_with`].
     pub fn framed(self, content: impl FnOnce(&mut egui::Ui)) -> egui::Response {
@@ -693,7 +697,11 @@ impl<'a> NodeCtx<'a> {
     /// Show content within a custom frame.
     ///
     /// This consumes the context, ensuring content is only added once.
-    /// Returns the combined response from the frame and content.
+    ///
+    /// Returns the combined response from the frame and content area. This response:
+    /// - Has a rect covering the entire framed area.
+    /// - Reports interactions (clicks, drags, hovers) on any part of the node.
+    /// - Is used by [`Node::show`] for selection and drag handling.
     ///
     /// For default frame styling, use [`NodeCtx::framed`].
     pub fn framed_with(
