@@ -7,13 +7,23 @@ pub fn egui_id(graph_id: egui::Id, node_id: NodeId) -> egui::Id {
     graph_id.with(node_id.0)
 }
 
+/// Describes the interaction state of a node.
+///
+/// This is passed to the frame closure to allow styling based on selection state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NodeInteraction {
+    /// Whether the node is currently selected.
+    pub selected: bool,
+    /// Whether the node is within the current selection rectangle.
+    pub in_selection_rect: bool,
+}
+
 /// The default node widget.
 ///
 /// A `Node` is a thin wrapper around a `Window` and allows for instantiating arbitrary widgets
 /// internally.
 pub struct Node {
     id: NodeId,
-    frame: Option<egui::Frame>,
     inputs: usize,
     outputs: usize,
     flow: egui::Direction,
@@ -82,6 +92,15 @@ pub enum EdgeEvent {
     Cancelled,
 }
 
+/// Context passed to the node's content closure.
+///
+/// Provides access to interaction state and style, and ensures content is properly framed.
+pub struct NodeCtx<'a> {
+    ui: &'a mut egui::Ui,
+    interaction: NodeInteraction,
+    min_size: egui::Vec2,
+}
+
 impl Node {
     /// Begin instantiating a new node widget.
     pub fn new(id_src: impl Hash) -> Self {
@@ -92,7 +111,6 @@ impl Node {
     pub fn from_id(id: NodeId) -> Self {
         Self {
             id,
-            frame: None,
             max_width: None,
             socket_color: None,
             inputs: 0,
@@ -101,14 +119,6 @@ impl Node {
             socket_radius: 3.0,
             animation_time: 0.1,
         }
-    }
-
-    /// Specify the `Frame` used for the `Node`'s window.
-    ///
-    /// The default is retrieved via `egui_graph::node::default_frame(ui.style())`.
-    pub fn frame(mut self, frame: egui::Frame) -> Self {
-        self.frame = Some(frame);
-        self
     }
 
     /// Optionally specify the max width of the `Node`'s window.
@@ -166,11 +176,23 @@ impl Node {
     }
 
     /// Present the `Node`'s `Window` and add the given contents.
+    ///
+    /// The content closure receives a [`NodeCtx`] which provides access to interaction state
+    /// and ensures content is properly framed. Use [`NodeCtx::framed`] for default styling
+    /// or [`NodeCtx::framed_with`] for custom frame styling:
+    ///
+    /// ```ignore
+    /// Node::from_id(id).show(ctx, ui, |node_ctx| {
+    ///     node_ctx.framed(|ui| {
+    ///         ui.label("Hello");
+    ///     })
+    /// });
+    /// ```
     pub fn show(
         self,
         ctx: &mut NodesCtx,
         ui: &mut egui::Ui,
-        content: impl FnOnce(&mut egui::Ui),
+        content: impl FnOnce(NodeCtx<'_>) -> egui::Response,
     ) -> NodeResponse {
         self.show_impl(ctx, ui, Box::new(content) as Box<_>)
     }
@@ -179,7 +201,7 @@ impl Node {
         self,
         ctx: &mut NodesCtx,
         ui: &mut egui::Ui,
-        content: Box<dyn FnOnce(&mut egui::Ui) + 'a>,
+        content: Box<dyn FnOnce(NodeCtx<'_>) -> egui::Response + 'a>,
     ) -> NodeResponse {
         let layout = &mut ctx.layout;
 
@@ -243,8 +265,6 @@ impl Node {
                 }
             }
         }
-        // Retrieve the frame.
-        let mut frame = self.frame.unwrap_or_else(|| default_frame(ui.style()));
 
         let max_w = self.max_width.unwrap_or(ui.spacing().text_edit_width);
         let max_size = egui::Vec2::new(max_w, ctx.graph_rect.height());
@@ -290,16 +310,15 @@ impl Node {
             (selected, in_selection_rect)
         };
 
-        // Style the frame based on interaction.
-        frame.stroke.width = ui.visuals().selection.stroke.width;
-        if selected {
-            frame.stroke = ui.visuals().selection.stroke;
-        } else if in_selection_rect {
-            let color = ui.visuals().weak_text_color();
-            frame.shadow.color = color;
-            frame.stroke = ui.visuals().selection.stroke;
-            frame.stroke.color = color;
-        }
+        // Build the interaction state.
+        let interaction = NodeInteraction {
+            selected,
+            in_selection_rect,
+        };
+
+        // Calculate the minimum size for the content (accounting for frame corner radius).
+        let gap = egui::Vec2::splat(win_corner_radius * 2.0);
+        let content_min_size = min_size - gap;
 
         // Custom framed node container that remains in the scene's layer
         let put_size = egui::Vec2::new(max_size.x, min_size.y);
@@ -313,30 +332,20 @@ impl Node {
             ui.ctx().set_transform_layer(frame_layer, transform);
         }
 
-        // A `Ui` scope for placing the `Frame`.
+        // A `Ui` scope for the node's layer.
         let builder = egui::UiBuilder::new()
             .max_rect(put_rect)
             .layer_id(frame_layer)
             .sense(egui::Sense::click_and_drag());
         let inner_response = ui.scope_builder(builder, |ui| {
-            // Show the frame.
-            let inner_response = frame.show(ui, |ui| {
-                // Create a node content UI that can be clicked and dragged.
-                let builder = egui::UiBuilder::new().sense(egui::Sense::click_and_drag());
-                let inner_response = ui.scope_builder(builder, |ui| {
-                    // Set the minimum size required to layout the sockets.
-                    let gap = egui::Vec2::splat(win_corner_radius * 2.0);
-                    let min_size = min_size - gap;
-                    ui.set_min_size(min_size);
-
-                    // Set the user's content.
-                    content(ui);
-                });
-                inner_response.response
-            });
-
-            // Merge the content area response with the frame response.
-            inner_response.response.union(inner_response.inner)
+            // Create the NodeCtx and call the user's content closure.
+            // The user is responsible for calling `framed` or `default_framed` on the context.
+            let node_ctx = NodeCtx {
+                ui,
+                interaction,
+                min_size: content_min_size,
+            };
+            content(node_ctx)
         });
         let mut response = inner_response.response.union(inner_response.inner);
 
@@ -659,11 +668,80 @@ impl DerefMut for NodeResponse {
     }
 }
 
+impl<'a> NodeCtx<'a> {
+    /// The current interaction state of the node.
+    pub fn interaction(&self) -> NodeInteraction {
+        self.interaction
+    }
+
+    /// The current egui style.
+    pub fn style(&self) -> &egui::Style {
+        self.ui.style()
+    }
+
+    /// Show content with the default frame styling.
+    ///
+    /// This consumes the context, ensuring content is only added once.
+    ///
+    /// Returns the combined response from the frame and content area. This response:
+    /// - Has a rect covering the entire framed area.
+    /// - Reports interactions (clicks, drags, hovers) on any part of the node.
+    /// - Is used by [`Node::show`] for selection and drag handling.
+    ///
+    /// For custom frame styling, use [`NodeCtx::framed_with`].
+    pub fn framed(self, content: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+        let frame = default_frame(self.style(), self.interaction);
+        self.framed_with(frame, content)
+    }
+
+    /// Show content within a custom frame.
+    ///
+    /// This consumes the context, ensuring content is only added once.
+    ///
+    /// Returns the combined response from the frame and content area. This response:
+    /// - Has a rect covering the entire framed area.
+    /// - Reports interactions (clicks, drags, hovers) on any part of the node.
+    /// - Is used by [`Node::show`] for selection and drag handling.
+    ///
+    /// For default frame styling, use [`NodeCtx::framed`].
+    pub fn framed_with(
+        self,
+        frame: egui::Frame,
+        content: impl FnOnce(&mut egui::Ui),
+    ) -> egui::Response {
+        let min_size = self.min_size;
+        let builder = egui::UiBuilder::new().sense(egui::Sense::click_and_drag());
+        let inner_response = frame.show(self.ui, |ui| {
+            let inner_response = ui.scope_builder(builder, |ui| {
+                ui.set_min_size(min_size);
+                content(ui);
+            });
+            inner_response.response
+        });
+        inner_response.response.union(inner_response.inner)
+    }
+}
+
 /// The default frame styling used for the `Node`'s `Window`.
-pub fn default_frame(style: &egui::Style) -> egui::Frame {
+///
+/// This applies selection styling based on the `NodeInteraction` state:
+/// - Selected nodes get the selection stroke.
+/// - Nodes in the selection rectangle get a dimmed selection stroke.
+pub fn default_frame(style: &egui::Style, interaction: NodeInteraction) -> egui::Frame {
     let mut frame = egui::Frame::window(style);
     frame.shadow.offset = [2, 2];
     frame.shadow.spread = (frame.shadow.spread as f32 * 0.25) as u8;
-    frame.stroke.width = 0.0;
+
+    // Style the frame based on interaction.
+    frame.stroke.width = style.visuals.selection.stroke.width;
+    if interaction.selected {
+        frame.stroke = style.visuals.selection.stroke;
+    } else if interaction.in_selection_rect {
+        let color = style.visuals.weak_text_color();
+        frame.shadow.color = color;
+        frame.stroke = style.visuals.selection.stroke;
+        frame.stroke.color = color;
+    }
+
     frame
 }

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "layout")]
 pub use layout::layout;
-pub use node::NodeId;
+pub use node::{NodeCtx, NodeId, NodeInteraction};
 
 pub mod bezier;
 pub mod edge;

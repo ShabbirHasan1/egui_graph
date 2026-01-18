@@ -223,28 +223,30 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
             .flow(state.flow)
             .socket_radius(state.socket_radius)
             .socket_color(state.socket_color)
-            .show(nctx, ui, |ui| match node.kind {
-                NodeKind::Label => {
-                    ui.label(&node.name);
-                }
-                NodeKind::Button => {
-                    ui.horizontal(|ui| {
-                        if ui.button(&node.name).clicked() {
-                            println!("{}", node.name);
-                        }
-                    });
-                }
-                NodeKind::DragValue(ref mut f) => {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(f).range(0.0..=255.0));
-                    });
-                }
-                NodeKind::Slider(ref mut f) => {
-                    ui.horizontal(|ui| ui.add(egui::Slider::new(f, 0.0..=1.0)));
-                }
-                NodeKind::Comment(ref mut text) => {
-                    ui.text_edit_multiline(text);
-                }
+            .show(nctx, ui, |node_ctx| {
+                node_ctx.framed(|ui| match node.kind {
+                    NodeKind::Label => {
+                        ui.label(&node.name);
+                    }
+                    NodeKind::Button => {
+                        ui.horizontal(|ui| {
+                            if ui.button(&node.name).clicked() {
+                                println!("{}", node.name);
+                            }
+                        });
+                    }
+                    NodeKind::DragValue(ref mut f) => {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::DragValue::new(f).range(0.0..=255.0));
+                        });
+                    }
+                    NodeKind::Slider(ref mut f) => {
+                        ui.horizontal(|ui| ui.add(egui::Slider::new(f, 0.0..=1.0)));
+                    }
+                    NodeKind::Comment(ref mut text) => {
+                        ui.text_edit_multiline(text);
+                    }
+                })
             });
 
         if response.changed() {
