@@ -70,8 +70,8 @@ pub struct PositionedSocket {
 }
 
 /// An extension around the `egui::Response` that indicates node selection.
-pub struct NodeResponse {
-    response: egui::Response,
+pub struct NodeResponse<T> {
+    response: egui::InnerResponse<T>,
     selection_changed: bool,
     selected: bool,
     removed: bool,
@@ -188,21 +188,21 @@ impl Node {
     ///     })
     /// });
     /// ```
-    pub fn show(
+    pub fn show<R>(
         self,
         ctx: &mut NodesCtx,
         ui: &mut egui::Ui,
-        content: impl FnOnce(NodeCtx<'_>) -> egui::Response,
-    ) -> NodeResponse {
+        content: impl FnOnce(NodeCtx<'_>) -> egui::InnerResponse<R>,
+    ) -> NodeResponse<R> {
         self.show_impl(ctx, ui, Box::new(content) as Box<_>)
     }
 
-    fn show_impl<'a>(
+    fn show_impl<'a, R>(
         self,
         ctx: &mut NodesCtx,
         ui: &mut egui::Ui,
-        content: Box<dyn FnOnce(NodeCtx<'_>) -> egui::Response + 'a>,
-    ) -> NodeResponse {
+        content: Box<dyn FnOnce(NodeCtx<'_>) -> egui::InnerResponse<R> + 'a>,
+    ) -> NodeResponse<R> {
         let layout = &mut ctx.layout;
 
         // Indicate that we've visited this node this update.
@@ -347,7 +347,11 @@ impl Node {
             };
             content(node_ctx)
         });
-        let mut response = inner_response.response.union(inner_response.inner);
+
+        // Take the union of the ui scope and the frame response to monitor for
+        // interactions.
+        let mut response = inner_response.response.union(inner_response.inner.response);
+        let content_output = inner_response.inner.inner;
 
         // Update the stored data for this node and check for edge events.
         let mut edge_event = None;
@@ -587,7 +591,7 @@ impl Node {
         }
 
         NodeResponse {
-            response,
+            response: egui::InnerResponse::new(content_output, response),
             selection_changed,
             selected,
             removed,
@@ -622,7 +626,7 @@ impl From<u64> for NodeId {
     }
 }
 
-impl NodeResponse {
+impl<R> NodeResponse<R> {
     /// Whether or not the selection changed and, if so, whether or not the node is now selected.
     pub fn selection(&self) -> Option<bool> {
         if self.selection_changed {
@@ -644,8 +648,18 @@ impl NodeResponse {
         self.removed
     }
 
-    /// Consume the node response and produce the inner `egui::Response`.
-    pub fn into_inner(self) -> egui::Response {
+    /// A reference to the inner value returned by the node's content.
+    pub fn inner(&self) -> &R {
+        &self.response.inner
+    }
+
+    /// A mutable reference to the inner value returned by the node's content.
+    pub fn inner_mut(&mut self) -> &mut R {
+        &mut self.response.inner
+    }
+
+    /// Consume the node response and produce the inner `egui::InnerResponse`.
+    pub fn into_inner(self) -> egui::InnerResponse<R> {
         self.response
     }
 
@@ -655,16 +669,16 @@ impl NodeResponse {
     }
 }
 
-impl Deref for NodeResponse {
+impl<R> Deref for NodeResponse<R> {
     type Target = egui::Response;
     fn deref(&self) -> &Self::Target {
-        &self.response
+        &self.response.response
     }
 }
 
-impl DerefMut for NodeResponse {
+impl<R> DerefMut for NodeResponse<R> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.response
+        &mut self.response.response
     }
 }
 
@@ -689,7 +703,7 @@ impl<'a> NodeCtx<'a> {
     /// - Is used by [`Node::show`] for selection and drag handling.
     ///
     /// For custom frame styling, use [`NodeCtx::framed_with`].
-    pub fn framed(self, content: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    pub fn framed<T>(self, content: impl FnOnce(&mut egui::Ui) -> T) -> egui::InnerResponse<T> {
         let frame = default_frame(self.style(), self.interaction);
         self.framed_with(frame, content)
     }
@@ -704,21 +718,22 @@ impl<'a> NodeCtx<'a> {
     /// - Is used by [`Node::show`] for selection and drag handling.
     ///
     /// For default frame styling, use [`NodeCtx::framed`].
-    pub fn framed_with(
+    pub fn framed_with<T>(
         self,
         frame: egui::Frame,
-        content: impl FnOnce(&mut egui::Ui),
-    ) -> egui::Response {
+        content: impl FnOnce(&mut egui::Ui) -> T,
+    ) -> egui::InnerResponse<T> {
         let min_size = self.min_size;
         let builder = egui::UiBuilder::new().sense(egui::Sense::click_and_drag());
         let inner_response = frame.show(self.ui, |ui| {
-            let inner_response = ui.scope_builder(builder, |ui| {
+            ui.scope_builder(builder, |ui| {
                 ui.set_min_size(min_size);
-                content(ui);
-            });
-            inner_response.response
+                content(ui)
+            })
         });
-        inner_response.response.union(inner_response.inner)
+        let response = inner_response.response.union(inner_response.inner.response);
+        let content_output = inner_response.inner.inner;
+        egui::InnerResponse::new(content_output, response)
     }
 }
 
