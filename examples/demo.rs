@@ -137,34 +137,38 @@ fn layout(
     ctx: &egui::Context,
 ) -> egui_graph::Layout {
     let graph_id = graph_id();
-    ctx.memory(|m| {
-        let nodes = graph.node_indices().map(|n| {
-            let node_id = egui_graph::NodeId::from_u64(n.index() as u64);
-            // Use the helper to get the egui::Id for area_rect lookup
-            let egui_id = egui_graph::node::egui_id(graph_id, node_id);
-            let size = m
-                .area_rect(egui_id)
-                .map(|a| a.size())
-                .unwrap_or([200.0, 50.0].into());
-            (node_id, size)
+    // Access graph memory once and iterate inside to avoid repeated locks
+    let nodes_vec = egui_graph::with_graph_memory(ctx, graph_id, |gmem| {
+        let node_sizes = gmem.node_sizes();
+        graph
+            .node_indices()
+            .map(|n| {
+                let node_id = egui_graph::NodeId::from_u64(n.index() as u64);
+                let size = node_sizes
+                    .get(&node_id)
+                    .cloned()
+                    .unwrap_or_else(|| [200.0, 50.0].into());
+                (node_id, size)
+            })
+            .collect::<Vec<_>>()
+    });
+    let nodes = nodes_vec.into_iter();
+    let edges = graph
+        .edge_indices()
+        .filter_map(|e| graph.edge_endpoints(e))
+        .map(|(a, b)| {
+            (
+                egui_graph::NodeId::from_u64(a.index() as u64),
+                egui_graph::NodeId::from_u64(b.index() as u64),
+            )
         });
-        let edges = graph
-            .edge_indices()
-            .filter_map(|e| graph.edge_endpoints(e))
-            .map(|(a, b)| {
-                (
-                    egui_graph::NodeId::from_u64(a.index() as u64),
-                    egui_graph::NodeId::from_u64(b.index() as u64),
-                )
-            });
-        let mut layout = egui_graph::layout(nodes, edges, flow);
-        // Apply custom offset spacing to the layout
-        for pos in layout.values_mut() {
-            pos.x *= node_spacing[0];
-            pos.y *= node_spacing[1];
-        }
-        layout
-    })
+    let mut layout = egui_graph::layout(nodes, edges, flow);
+    // Apply custom offset spacing to the layout
+    for pos in layout.values_mut() {
+        pos.x *= node_spacing[0];
+        pos.y *= node_spacing[1];
+    }
+    layout
 }
 
 fn gui(ctx: &egui::Context, view: &mut egui_graph::View, state: &mut State) {
