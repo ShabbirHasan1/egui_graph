@@ -385,6 +385,13 @@ impl Graph {
     }
 }
 
+impl GraphTempMemory {
+    /// Get the recorded sizes of all nodes.
+    pub fn node_sizes(&self) -> &NodeSizes {
+        &self.node_sizes
+    }
+}
+
 impl NodeSockets {
     /// The screen position and normal of the input at the given index.
     ///
@@ -845,6 +852,23 @@ fn paint_selection_area(sel_rect: egui::Rect, ui: &mut egui::Ui) {
 /// Combines the given id src with the `TypeId` of the `Graph` to produce a unique `egui::Id`.
 pub fn id(id_src: impl Hash) -> egui::Id {
     egui::Id::new((std::any::TypeId::of::<Graph>(), id_src))
+}
+
+/// Access the graph's temporary memory for the given graph ID.
+///
+/// This allows reading graph state like node sizes without cloning.
+/// If no memory exists for the graph ID, a default GraphTempMemory is created and stored.
+pub fn with_graph_memory<R>(
+    ctx: &egui::Context,
+    graph_id: egui::Id,
+    f: impl FnOnce(&GraphTempMemory) -> R,
+) -> R {
+    let gmem_arc = ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Arc<Mutex<GraphTempMemory>>>(graph_id)
+            .clone()
+    });
+    let gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
+    f(&*gmem)
 }
 
 /// Checks if a node with the given ID is currently selected in the specified graph.
