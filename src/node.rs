@@ -16,6 +16,8 @@ pub struct NodeInteraction {
     pub selected: bool,
     /// Whether the node is within the current selection rectangle.
     pub in_selection_rect: bool,
+    /// Whether or not the pointer is hovered over the node.
+    pub hovered: bool,
 }
 
 /// The default node widget.
@@ -310,12 +312,6 @@ impl Node {
             (selected, in_selection_rect)
         };
 
-        // Build the interaction state.
-        let interaction = NodeInteraction {
-            selected,
-            in_selection_rect,
-        };
-
         // Calculate the minimum size for the content (accounting for frame corner radius).
         let gap = egui::Vec2::splat(win_corner_radius * 2.0);
         let content_min_size = min_size - gap;
@@ -338,11 +334,17 @@ impl Node {
             .layer_id(frame_layer)
             .sense(egui::Sense::click_and_drag());
         let inner_response = ui.scope_builder(builder, |ui| {
+            let hovered = ui.response().hovered();
             // Create the NodeCtx and call the user's content closure.
-            // The user is responsible for calling `framed` or `default_framed` on the context.
+            // The user is responsible for calling `framed` or `default_framed`
+            // on the context.
             let node_ctx = NodeCtx {
                 ui,
-                interaction,
+                interaction: NodeInteraction {
+                    selected,
+                    in_selection_rect,
+                    hovered,
+                },
                 min_size: content_min_size,
             };
             content(node_ctx)
