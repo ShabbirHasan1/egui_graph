@@ -101,6 +101,8 @@ pub struct NodeCtx<'a> {
     ui: &'a mut egui::Ui,
     interaction: NodeInteraction,
     min_size: egui::Vec2,
+    graph_id: egui::Id,
+    node_id: NodeId,
 }
 
 impl Node {
@@ -322,7 +324,9 @@ impl Node {
 
         // Put the node's frame on a layer above the scene's UI layer.
         let scene_layer = ui.layer_id();
-        let frame_layer = egui::LayerId::new(scene_layer.order, ctx.graph_id.with(self.id.0));
+        let node_id = self.id;
+        let egui_id = egui_id(ctx.graph_id, node_id);
+        let frame_layer = egui::LayerId::new(scene_layer.order, egui_id);
         ui.ctx().set_sublayer(scene_layer, frame_layer);
         if let Some(transform) = ui.ctx().layer_transform_to_global(scene_layer) {
             ui.ctx().set_transform_layer(frame_layer, transform);
@@ -346,6 +350,8 @@ impl Node {
                     hovered,
                 },
                 min_size: content_min_size,
+                graph_id: ctx.graph_id,
+                node_id,
             };
             content(node_ctx)
         });
@@ -693,6 +699,23 @@ impl<'a> NodeCtx<'a> {
     /// The current egui style.
     pub fn style(&self) -> &egui::Style {
         self.ui.style()
+    }
+
+    /// The ID of the graph with which this node is associated.
+    pub fn graph_id(&self) -> egui::Id {
+        self.graph_id
+    }
+
+    /// The unique node ID for this node (i.e. it's index within the graph).
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    /// The unique egui ID for this node (the graph ID combined with the node ID).
+    ///
+    /// This is useful for creating persistent IDs for sub-components like Resize containers.
+    pub fn egui_id(&self) -> egui::Id {
+        egui_id(self.graph_id(), self.node_id())
     }
 
     /// Show content with the default frame styling.
