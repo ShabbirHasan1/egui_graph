@@ -23,8 +23,8 @@ pub struct Edge<'a> {
 pub struct EdgeResponse {
     changed: bool,
     clicked: bool,
-    hovered: bool,
     deleted: bool,
+    hovered_pos: Option<egui::Pos2>,
 }
 
 /// An index of a node's input or output socket.
@@ -130,11 +130,12 @@ impl<'a> Edge<'a> {
 
         // Construct the response.
         let changed = old_selected != *selected;
+        let hovered_pos = if hovered { Some(closest_point) } else { None };
         let response = EdgeResponse {
             changed,
             clicked,
-            hovered,
             deleted,
+            hovered_pos,
         };
 
         // Paint the edge based on the interaction.
@@ -168,7 +169,12 @@ impl EdgeResponse {
 
     /// The pointer hovers over the edge.
     pub fn hovered(&self) -> bool {
-        self.hovered
+        self.hovered_pos.is_some()
+    }
+
+    /// The position on the edge closest to the pointer when hovered.
+    pub fn hovered_pos(&self) -> Option<egui::Pos2> {
+        self.hovered_pos
     }
 
     /// The edge was selected while `Delete` or `Backspace` were pressed.
