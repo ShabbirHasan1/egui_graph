@@ -1,4 +1,5 @@
 use crate::{bezier, EdgesCtx, NodeId};
+use std::ops;
 
 /// A simple bezier-curve Edge widget.
 ///
@@ -21,10 +22,10 @@ pub struct Edge<'a> {
 /// Similar to [`egui::Response`], however as there's no clear rectangular space
 /// allocated to the edge, we use a more minimal custom response.
 pub struct EdgeResponse {
+    response: egui::Response,
     changed: bool,
-    clicked: bool,
     deleted: bool,
-    hovered_pos: Option<egui::Pos2>,
+    closest_point: egui::Pos2,
 }
 
 /// An index of a node's input or output socket.
@@ -74,42 +75,48 @@ impl<'a> Edge<'a> {
         // TODO: Cache the curve and its points?
         let bezier = bezier::Cubic::from_edge_points(a_out, b_in);
 
-        // Check the graph `Ui` for interaction.
-        let response = ui.response();
-        let mouse_pos = response
+        // Get the mouse position for computing the closest point on the edge.
+        let ui_response = ui.response();
+        let mouse_pos = ui_response
             .interact_pointer_pos()
-            .or(response.hover_pos())
+            .or(ui_response.hover_pos())
             .unwrap_or_default();
-
-        // If the mouse was clicked on the `Ui`, check for edge interaction.
         let closest_point = bezier.closest_point(distance_per_point, mouse_pos);
-        let dist_to_mouse = closest_point.distance(mouse_pos);
+
+        // Create a per-edge response for interaction and context menu support.
+        // The interact area follows the mouse along the edge curve.
         let select_dist = ui.style().interaction.interact_radius;
+        let edge_id = ui.id().with(("edge", a, output, b, input));
+        let interact_rect = egui::Rect::from_center_size(
+            closest_point,
+            egui::vec2(select_dist * 2.0, select_dist * 2.0),
+        );
+        let response = ui.interact(interact_rect, edge_id, egui::Sense::click());
+
+        // Determine if edge interactions should be processed.
+        // Disable when drawing a new edge or when close to a socket.
         let edge_in_progress = ectx.in_progress(ui).is_some();
-        let hovered = dist_to_mouse < select_dist
-            && !edge_in_progress
-            && ectx.closest_socket.is_none()
-            && ui.input(|i| !i.pointer.primary_down() || i.pointer.could_any_button_be_click());
-        let clicked = hovered && response.clicked();
-        let old_selected = *selected;
+        let can_interact = !edge_in_progress && ectx.closest_socket.is_none();
+        let clicked = can_interact && response.clicked();
+
+        // Check if the edge intersects the selection rectangle.
         let under_selection_rect = ectx
             .selection_rect
             .map(|rect| bezier.intersects_rect(distance_per_point, rect))
             .unwrap_or(false);
 
-        // If already selected and clicked with ctrl down, or a press happened
-        // elsewhere and ctrl was *not* held, deselect.
+        // Handle selection state changes.
+        let old_selected = *selected;
         if *selected {
+            // Deselect if: edge drawing started, ctrl+click, or click elsewhere without ctrl.
             if edge_in_progress
                 || (clicked && ui.input(|i| i.modifiers.ctrl))
                 || ui.input(|i| i.pointer.primary_pressed() && !i.modifiers.ctrl)
             {
                 *selected = false;
             }
-        // Otherwise if clicked, select.
         } else if clicked {
             *selected = true;
-        // Otherwise, check if a selection rect would indicate selection.
         } else if under_selection_rect
             && ui.input(|i| i.modifiers.shift && i.pointer.primary_released())
         {
@@ -128,21 +135,16 @@ impl<'a> Edge<'a> {
             }
         }
 
-        // Construct the response.
-        let changed = old_selected != *selected;
-        let hovered_pos = if hovered { Some(closest_point) } else { None };
-        let response = EdgeResponse {
-            changed,
-            clicked,
-            deleted,
-            hovered_pos,
-        };
+        // Determine hover styling (additional conditions beyond response.hovered()).
+        let show_hover = can_interact
+            && response.hovered()
+            && ui.input(|i| !i.pointer.primary_down() || i.pointer.could_any_button_be_click());
 
-        // Paint the edge based on the interaction.
+        // Paint the edge.
         let pts: Vec<_> = bezier.flatten(distance_per_point).collect();
         let stroke = if *selected {
             ui.style().visuals.selection.stroke
-        } else if hovered {
+        } else if show_hover {
             ui.style().visuals.widgets.hovered.fg_stroke
         } else if under_selection_rect && ui.input(|i| i.modifiers.shift) {
             ui.style().visuals.widgets.hovered.fg_stroke
@@ -151,8 +153,14 @@ impl<'a> Edge<'a> {
         };
         ui.painter().add(egui::Shape::line(pts, stroke));
 
-        // Return the response.
-        response
+        // Construct and return the response.
+        let changed = old_selected != *selected;
+        EdgeResponse {
+            response,
+            changed,
+            deleted,
+            closest_point,
+        }
     }
 }
 
@@ -162,23 +170,26 @@ impl EdgeResponse {
         self.changed
     }
 
-    /// The edge was clicked.
-    pub fn clicked(&self) -> bool {
-        self.clicked
-    }
-
-    /// The pointer hovers over the edge.
-    pub fn hovered(&self) -> bool {
-        self.hovered_pos.is_some()
-    }
-
-    /// The position on the edge closest to the pointer when hovered.
-    pub fn hovered_pos(&self) -> Option<egui::Pos2> {
-        self.hovered_pos
-    }
-
     /// The edge was selected while `Delete` or `Backspace` were pressed.
     pub fn deleted(&self) -> bool {
         self.deleted
+    }
+
+    /// The position on the edge closest to the pointer.
+    pub fn closest_point(&self) -> egui::Pos2 {
+        self.closest_point
+    }
+}
+
+impl ops::Deref for EdgeResponse {
+    type Target = egui::Response;
+    fn deref(&self) -> &Self::Target {
+        &self.response
+    }
+}
+
+impl From<EdgeResponse> for egui::Response {
+    fn from(response: EdgeResponse) -> Self {
+        response.response
     }
 }
