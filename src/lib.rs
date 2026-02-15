@@ -20,6 +20,8 @@ pub struct Graph {
     max_inner_size: Option<egui::Vec2>,
     center_view: bool,
     id: egui::Id,
+    /// If set, overwrite the graph's selected nodes at the start of the frame.
+    selected_nodes: Option<HashSet<NodeId>>,
 }
 
 /// State related to the graph UI.
@@ -201,6 +203,7 @@ impl Graph {
             max_inner_size: None,
             center_view: Self::DEFAULT_CENTER_VIEW,
             id,
+            selected_nodes: None,
         }
     }
 
@@ -241,11 +244,20 @@ impl Graph {
         self
     }
 
+    /// Set the selected nodes for this frame.
+    ///
+    /// This overwrites the current selection in the graph's temporary memory
+    /// at the start of the next `show` call.
+    pub fn selected_nodes(mut self, nodes: HashSet<NodeId>) -> Self {
+        self.selected_nodes = Some(nodes);
+        self
+    }
+
     /// Begin showing the Graph.
     ///
     /// Returns the `InnerResponse` of the inner `Scene`.
     pub fn show<R>(
-        self,
+        mut self,
         view: &mut View,
         ui: &mut egui::Ui,
         content: impl FnOnce(&mut egui::Ui, Show) -> R,
@@ -283,6 +295,11 @@ impl Graph {
             // Check for selection rectangle and node dragging.
             let gmem_arc = memory(ui, self.id);
             let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
+
+            // Apply externally-provided selection if set.
+            if let Some(nodes) = self.selected_nodes.take() {
+                gmem.selection.nodes = nodes;
+            }
 
             // FIXME: Here we grab the global pointer and transform its position
             // to the graph scene space in order to check for initialising node
