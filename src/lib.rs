@@ -186,10 +186,8 @@ pub struct GraphResponse<R> {
     pub inner: R,
     /// The egui [`Response`][egui::Response] for the graph's scene area.
     pub response: egui::Response,
-    /// The set of selected nodes after this frame.
-    pub selected_nodes: HashSet<NodeId>,
-    /// Whether the node selection changed this frame.
-    pub selection_changed: bool,
+    /// The set of selected nodes, present only when the selection changed this frame.
+    pub selection_changed: Option<HashSet<NodeId>>,
 }
 
 impl Graph {
@@ -407,13 +405,16 @@ impl Graph {
             prune_unused_nodes(self.id, &visited, ui);
             bounding_rect = Some(ui.min_rect());
 
-            // Snapshot selection after all node processing.
+            // Snapshot selection only if it changed this frame.
             let gmem_arc = memory(ui, self.id);
             let gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
-            let selected_nodes = gmem.selection.nodes.clone();
-            let selection_changed = gmem.selection.changed;
+            let selection_changed = if gmem.selection.changed {
+                Some(gmem.selection.nodes.clone())
+            } else {
+                None
+            };
 
-            (output, selected_nodes, selection_changed)
+            (output, selection_changed)
         });
 
         if self.center_view {
@@ -422,11 +423,10 @@ impl Graph {
             }
         }
 
-        let (inner, selected_nodes, selection_changed) = scene_response.inner;
+        let (inner, selection_changed) = scene_response.inner;
         GraphResponse {
             inner,
             response: scene_response.response,
-            selected_nodes,
             selection_changed,
         }
     }

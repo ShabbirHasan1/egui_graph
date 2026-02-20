@@ -194,12 +194,13 @@ fn graph(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
                 });
         });
 
-    // Sync the demo's selection state from the authoritative post-frame snapshot.
-    state.interaction.selection.nodes = graph_response
-        .selected_nodes
-        .iter()
-        .filter_map(|node_id| state.node_id_map.get(node_id).copied())
-        .collect();
+    // Sync the demo's selection state when it changes.
+    if let Some(selected) = graph_response.selection_changed {
+        state.interaction.selection.nodes = selected
+            .iter()
+            .filter_map(|node_id| state.node_id_map.get(node_id).copied())
+            .collect();
+    }
 }
 
 fn set_edge_style(style: &mut egui::Style, state: &mut State) {
