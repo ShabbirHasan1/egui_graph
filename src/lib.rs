@@ -54,6 +54,8 @@ type NodeSizes = HashMap<NodeId, egui::Vec2>;
 struct Selection {
     /// The set of currently selected nodes.
     nodes: HashSet<NodeId>,
+    /// Whether the selection was modified this frame.
+    changed: bool,
 }
 
 /// State related to the last press of the primary pointer button over the graph.
@@ -186,6 +188,8 @@ pub struct GraphResponse<R> {
     pub response: egui::Response,
     /// The set of selected nodes after this frame.
     pub selected_nodes: HashSet<NodeId>,
+    /// Whether the node selection changed this frame.
+    pub selection_changed: bool,
 }
 
 impl Graph {
@@ -312,6 +316,9 @@ impl Graph {
                 gmem.selection.nodes = nodes;
             }
 
+            // Reset the selection dirty flag for this frame.
+            gmem.selection.changed = false;
+
             // FIXME: Here we grab the global pointer and transform its position
             // to the graph scene space in order to check for initialising node
             // drag events. However, doing this means we run the risk of
@@ -404,8 +411,9 @@ impl Graph {
             let gmem_arc = memory(ui, self.id);
             let gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
             let selected_nodes = gmem.selection.nodes.clone();
+            let selection_changed = gmem.selection.changed;
 
-            (output, selected_nodes)
+            (output, selected_nodes, selection_changed)
         });
 
         if self.center_view {
@@ -414,11 +422,12 @@ impl Graph {
             }
         }
 
-        let (inner, selected_nodes) = scene_response.inner;
+        let (inner, selected_nodes, selection_changed) = scene_response.inner;
         GraphResponse {
             inner,
             response: scene_response.response,
             selected_nodes,
+            selection_changed,
         }
     }
 }

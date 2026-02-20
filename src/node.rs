@@ -299,13 +299,9 @@ impl Node {
             // Update the selection if the primary mouse button was just released.
             if ctx.select {
                 if in_selection_rect && ui.input(|i| !i.modifiers.shift) {
-                    if gmem.selection.nodes.insert(self.id) {
-                        selection_changed = true;
-                    }
+                    selection_changed |= gmem.selection.nodes.insert(self.id);
                 } else if !ui.input(|i| i.modifiers.ctrl) {
-                    if gmem.selection.nodes.remove(&self.id) {
-                        selection_changed = true;
-                    }
+                    selection_changed |= gmem.selection.nodes.remove(&self.id);
                 }
             }
 
@@ -376,14 +372,15 @@ impl Node {
                 // If ctrl is down, check for deselection.
                 let was_selected = gmem.selection.nodes.contains(&self.id);
                 if ctrl_down && was_selected {
-                    selection_changed = gmem.selection.nodes.remove(&self.id);
+                    selection_changed |= gmem.selection.nodes.remove(&self.id);
                     selected = false;
                 } else {
                     // Clear other selections if ctrl is not pressed and this is newly pressed.
                     if !ctrl_down && !was_selected {
+                        gmem.selection.changed |= !gmem.selection.nodes.is_empty();
                         gmem.selection.nodes.clear();
                     }
-                    selection_changed = gmem.selection.nodes.insert(self.id);
+                    selection_changed |= gmem.selection.nodes.insert(self.id);
                     selected = true;
                     // We must initialize gmem.pressed here so that subsequent drag updates work correctly.
                     if gmem.pressed.is_none() {
@@ -424,7 +421,7 @@ impl Node {
                         .unwrap_or(false)
                     && !gmem.selection.nodes.contains(&self.id)
                 {
-                    selection_changed = gmem.selection.nodes.remove(&self.id);
+                    selection_changed |= gmem.selection.nodes.remove(&self.id);
                     selected = false;
                 }
 
@@ -587,12 +584,19 @@ impl Node {
             // Remove ourselves from the selection.
             let gmem_arc = crate::memory(ui, ctx.graph_id);
             let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
-            selection_changed = gmem.selection.nodes.remove(&self.id);
+            selection_changed |= gmem.selection.nodes.remove(&self.id);
             selected = false;
             true
         } else {
             false
         };
+
+        // Propagate this node's selection change to the graph-level dirty flag.
+        if selection_changed {
+            let gmem_arc = crate::memory(ui, ctx.graph_id);
+            let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
+            gmem.selection.changed = true;
+        }
 
         if selection_changed || removed || edge_event.is_some() {
             response.mark_changed();
