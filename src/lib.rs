@@ -178,6 +178,16 @@ struct GraphInteraction {
     drag_nodes_delta: egui::Vec2,
 }
 
+/// The response returned by [`Graph::show`].
+pub struct GraphResponse<R> {
+    /// The user's return value from the content closure.
+    pub inner: R,
+    /// The egui [`Response`][egui::Response] for the graph's scene area.
+    pub response: egui::Response,
+    /// The set of selected nodes after this frame.
+    pub selected_nodes: HashSet<NodeId>,
+}
+
 impl Graph {
     /// The default zoom range.
     ///
@@ -255,13 +265,14 @@ impl Graph {
 
     /// Begin showing the Graph.
     ///
-    /// Returns the `InnerResponse` of the inner `Scene`.
+    /// Returns a [`GraphResponse`] containing the user's return value,
+    /// the scene [`egui::Response`], and the current set of selected nodes.
     pub fn show<R>(
         mut self,
         view: &mut View,
         ui: &mut egui::Ui,
         content: impl FnOnce(&mut egui::Ui, Show) -> R,
-    ) -> egui::response::InnerResponse<R> {
+    ) -> GraphResponse<R> {
         // The full area to be occuppied by the graph.
         let graph_rect = ui.available_rect_before_wrap();
 
@@ -389,7 +400,12 @@ impl Graph {
             prune_unused_nodes(self.id, &visited, ui);
             bounding_rect = Some(ui.min_rect());
 
-            output
+            // Snapshot selection after all node processing.
+            let gmem_arc = memory(ui, self.id);
+            let gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
+            let selected_nodes = gmem.selection.nodes.clone();
+
+            (output, selected_nodes)
         });
 
         if self.center_view {
@@ -398,7 +414,12 @@ impl Graph {
             }
         }
 
-        scene_response
+        let (inner, selected_nodes) = scene_response.inner;
+        GraphResponse {
+            inner,
+            response: scene_response.response,
+            selected_nodes,
+        }
     }
 }
 
