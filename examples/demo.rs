@@ -181,7 +181,7 @@ fn gui(ctx: &egui::Context, view: &mut egui_graph::View, state: &mut State) {
 }
 
 fn graph(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
-    egui_graph::Graph::from_id(graph_id())
+    let graph_response = egui_graph::Graph::from_id(graph_id())
         .center_view(state.center_view)
         .dot_grid(state.dot_grid)
         .show(view, ui, |ui, show| {
@@ -193,6 +193,14 @@ fn graph(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
                     edges(ectx, ui, state)
                 });
         });
+
+    // Sync the demo's selection state when it changes.
+    if let Some(selected) = graph_response.selection_changed {
+        state.interaction.selection.nodes = selected
+            .iter()
+            .filter_map(|node_id| state.node_id_map.get(node_id).copied())
+            .collect();
+    }
 }
 
 fn set_edge_style(style: &mut egui::Style, state: &mut State) {
@@ -254,13 +262,6 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
             });
 
         if response.changed() {
-            // Update the selected nodes.
-            if egui_graph::is_node_selected(ui, nctx.graph_id, node_id) {
-                state.interaction.selection.nodes.insert(n);
-            } else {
-                state.interaction.selection.nodes.remove(&n);
-            }
-
             // Check for an edge event.
             if let Some(ev) = response.edge_event() {
                 match ev {
