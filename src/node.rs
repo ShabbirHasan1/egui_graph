@@ -103,6 +103,7 @@ pub struct NodeCtx<'a> {
     min_size: egui::Vec2,
     graph_id: egui::Id,
     node_id: NodeId,
+    immutable: bool,
 }
 
 impl Node {
@@ -333,6 +334,7 @@ impl Node {
             .max_rect(put_rect)
             .layer_id(frame_layer)
             .sense(egui::Sense::click_and_drag());
+        let immutable = ctx.immutable;
         let inner_response = ui.scope_builder(builder, |ui| {
             let hovered = ui.response().hovered();
             // Create the NodeCtx and call the user's content closure.
@@ -348,6 +350,7 @@ impl Node {
                 min_size: content_min_size,
                 graph_id: ctx.graph_id,
                 node_id,
+                immutable,
             };
             content(node_ctx)
         });
@@ -382,8 +385,8 @@ impl Node {
                     }
                     selection_changed |= gmem.selection.nodes.insert(self.id);
                     selected = true;
-                    // We must initialize gmem.pressed here so that subsequent drag updates work correctly.
-                    if gmem.pressed.is_none() {
+                    // Initialize drag - skip when immutable (still allow click-to-select above).
+                    if !immutable && gmem.pressed.is_none() {
                         let ptr_graph = response.hover_pos().unwrap_or_default();
                         gmem.pressed = Some(crate::Pressed {
                             over_selection_at_origin: true,
@@ -399,8 +402,11 @@ impl Node {
                     }
                 }
 
-            // If the primary button was pressed, check for edge events.
-            } else if !response.is_pointer_button_down_on() && pointer.primary_pressed() {
+            // If the primary button was pressed, check for edge events (skip when immutable).
+            } else if !immutable
+                && !response.is_pointer_button_down_on()
+                && pointer.primary_pressed()
+            {
                 // If this node's socket was pressed, create a start event.
                 if let Some(ref pressed) = gmem.pressed {
                     if let crate::PressAction::Socket(socket) = pressed.action {
@@ -425,19 +431,21 @@ impl Node {
                     selected = false;
                 }
 
-            // Check for edge creation / cancellation events.
-            } else if let Some(r) = ctx.socket_press_released {
-                if let Some(c) = gmem.closest_socket {
-                    if r.kind == c.kind && self.id == r.node {
-                        edge_event = Some(EdgeEvent::Cancelled);
-                    } else if self.id == c.node && ui.input(|i| i.pointer.primary_released()) {
-                        let kind = c.kind;
-                        let index = c.index;
-                        edge_event = Some(EdgeEvent::Ended { kind, index });
-                    }
-                } else if edge_event.is_none() {
-                    if self.id == r.node {
-                        edge_event = Some(EdgeEvent::Cancelled);
+            // Check for edge creation / cancellation events (skip when immutable).
+            } else if !immutable {
+                if let Some(r) = ctx.socket_press_released {
+                    if let Some(c) = gmem.closest_socket {
+                        if r.kind == c.kind && self.id == r.node {
+                            edge_event = Some(EdgeEvent::Cancelled);
+                        } else if self.id == c.node && ui.input(|i| i.pointer.primary_released()) {
+                            let kind = c.kind;
+                            let index = c.index;
+                            edge_event = Some(EdgeEvent::Ended { kind, index });
+                        }
+                    } else if edge_event.is_none() {
+                        if self.id == r.node {
+                            edge_event = Some(EdgeEvent::Cancelled);
+                        }
                     }
                 }
             }
@@ -577,7 +585,9 @@ impl Node {
         }
 
         // If the delete or backspace key was pressed and the node is selected, remove it.
-        let removed = if selected
+        // Skip when immutable.
+        let removed = if !immutable
+            && selected
             && !ui.ctx().wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Delete) | i.key_pressed(egui::Key::Backspace))
         {
@@ -753,10 +763,16 @@ impl<'a> NodeCtx<'a> {
         content: impl FnOnce(&mut egui::Ui) -> T,
     ) -> egui::InnerResponse<T> {
         let min_size = self.min_size;
+        let immutable = self.immutable;
         let builder = egui::UiBuilder::new().sense(egui::Sense::click_and_drag());
         let inner_response = frame.show(self.ui, |ui| {
             ui.scope_builder(builder, |ui| {
                 ui.set_min_size(min_size);
+                // Disable content widgets when immutable (inside the frame
+                // so that the frame itself retains normal styling).
+                if immutable {
+                    ui.disable();
+                }
                 content(ui)
             })
         });

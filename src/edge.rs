@@ -123,12 +123,12 @@ impl<'a> Edge<'a> {
             *selected = true;
         }
 
-        // Check if the edge was deleted.
+        // Check if the edge was deleted (skip when immutable).
         let mut deleted = false;
         // FIXME: We may only want to do this if `ui.id()` has focus
         // (Memory::has_focus) or similar, but we still need to setup proper
         // focus-requesting and consider how to handle nodes too.
-        if *selected && !ui.ctx().wants_keyboard_input() {
+        if !ectx.immutable && *selected && !ui.ctx().wants_keyboard_input() {
             let del_keys = [egui::Key::Delete, egui::Key::Backspace];
             if ui.input(|i| del_keys.iter().any(|&k| i.key_pressed(k))) {
                 deleted = true;

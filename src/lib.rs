@@ -22,6 +22,14 @@ pub struct Graph {
     id: egui::Id,
     /// If set, overwrite the graph's selected nodes at the start of the frame.
     selected_nodes: Option<HashSet<NodeId>>,
+    /// When `true`, prevents structural changes while preserving navigation and
+    /// selection.
+    ///
+    /// Unlike `Ui::set_enabled(false)` which disables all interaction
+    /// (including panning, zooming, and selection), `immutable` only prevents
+    /// structural changes - node positions, edges, and node content remain
+    /// view-only while navigation and selection continue to work.
+    immutable: bool,
 }
 
 /// State related to the graph UI.
@@ -133,6 +141,8 @@ pub struct Show<'a> {
     /// We will use this to remove old node state on `drop`.
     visited: &'a mut HashSet<NodeId>,
     layout: &'a mut Layout,
+    /// Whether the graph is in immutable (view-only) mode.
+    immutable: bool,
 }
 
 /// Information about the inputs and outputs for a particular node.
@@ -160,6 +170,8 @@ pub struct NodesCtx<'a> {
     socket_press_released: Option<node::Socket>,
     visited: &'a mut HashSet<NodeId>,
     layout: &'a mut Layout,
+    /// Whether the graph is in immutable (view-only) mode.
+    pub immutable: bool,
 }
 
 /// A context to assist with the instantiation of edge widgets.
@@ -168,6 +180,8 @@ pub struct EdgesCtx {
     graph_rect: egui::Rect,
     selection_rect: Option<egui::Rect>,
     closest_socket: Option<node::Socket>,
+    /// Whether the graph is in immutable (view-only) mode.
+    pub immutable: bool,
 }
 
 /// The set of detected graph interaction for a single graph widget update prior
@@ -216,6 +230,7 @@ impl Graph {
             center_view: Self::DEFAULT_CENTER_VIEW,
             id,
             selected_nodes: None,
+            immutable: false,
         }
     }
 
@@ -262,6 +277,18 @@ impl Graph {
     /// at the start of the next `show` call.
     pub fn selected_nodes(mut self, nodes: HashSet<NodeId>) -> Self {
         self.selected_nodes = Some(nodes);
+        self
+    }
+
+    /// Set immutable (view-only) mode.
+    ///
+    /// When `true`, prevents structural changes while preserving navigation
+    /// and selection. Node dragging, edge creation/deletion, node deletion,
+    /// and node content widgets are all disabled.
+    ///
+    /// Default: `false`.
+    pub fn immutable(mut self, immutable: bool) -> Self {
+        self.immutable = immutable;
         self
     }
 
@@ -337,18 +364,22 @@ impl Graph {
                     find_closest_socket(pos, layout, &gmem, ui).map(|(socket, _dist_sqrd)| socket)
                 });
 
+                // When immutable, suppress socket presses (map to Select).
+                let closest_socket_for_interaction =
+                    if self.immutable { None } else { closest_socket };
+
                 // Check for graph interactions.
                 let interaction = graph_interaction(
                     layout,
                     &pointer,
-                    closest_socket,
+                    closest_socket_for_interaction,
                     ptr_on_graph,
                     ptr_graph,
                     gmem.pressed.as_ref(),
                 );
 
-                // Apply drag delta to all selected nodes.
-                if interaction.drag_nodes_delta != egui::Vec2::ZERO {
+                // Apply drag delta to all selected nodes (skip when immutable).
+                if !self.immutable && interaction.drag_nodes_delta != egui::Vec2::ZERO {
                     if let Some(pressed) = gmem.pressed.as_ref() {
                         if let PressAction::DragNodes { .. } = pressed.action {
                             for &n_id in &gmem.selection.nodes {
@@ -395,6 +426,7 @@ impl Graph {
                 socket_press_released,
                 visited: &mut visited,
                 layout,
+                immutable: self.immutable,
             };
 
             // Drop the lock before running the content.
@@ -501,6 +533,7 @@ impl<'a> Show<'a> {
                 socket_press_released,
                 ref mut visited,
                 ref mut layout,
+                immutable,
                 ..
             } = self;
             let mut ctx = NodesCtx {
@@ -511,6 +544,7 @@ impl<'a> Show<'a> {
                 socket_press_released,
                 visited: &mut *visited,
                 layout: &mut *layout,
+                immutable,
             };
             content(&mut ctx, ui);
         }
@@ -529,6 +563,7 @@ impl<'a> Show<'a> {
                 graph_id,
                 selection_rect,
                 closest_socket,
+                immutable,
                 ..
             } = self;
             let mut ctx = EdgesCtx {
@@ -536,6 +571,7 @@ impl<'a> Show<'a> {
                 graph_rect,
                 selection_rect,
                 closest_socket,
+                immutable,
             };
             content(&mut ctx, ui);
         }
