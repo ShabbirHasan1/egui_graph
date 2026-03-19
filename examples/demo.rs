@@ -59,6 +59,11 @@ enum NodeKind {
     Slider(f32),
     DragValue(f32),
     Comment(String),
+    /// A table-style node with row-aligned sockets (Blender-style).
+    Table {
+        color: f32,
+        alpha: f32,
+    },
 }
 
 impl App {
@@ -113,11 +118,19 @@ fn new_graph() -> Graph {
     let comment = "Nodes are a thin wrapper around the `egui::Window`, \
         allowing you to set arbitrary widgets.";
     let e = graph.add_node(node("Fiz", NodeKind::Comment(comment.to_string())));
+    let f = graph.add_node(node(
+        "Mix",
+        NodeKind::Table {
+            color: 0.5,
+            alpha: 1.0,
+        },
+    ));
     graph.add_edge(a, c, (0, 0));
     graph.add_edge(a, d, (1, 1));
     graph.add_edge(b, d, (0, 2));
     graph.add_edge(c, d, (0, 0));
     graph.add_edge(d, e, (0, 0));
+    graph.add_edge(d, f, (0, 0));
     graph
 }
 
@@ -232,14 +245,20 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
         let node = &mut state.graph[n];
         let node_id = egui_graph::NodeId::from_u64(n.index() as u64);
         state.node_id_map.insert(node_id, n);
+        let is_table = matches!(node.kind, NodeKind::Table { .. });
+        let flow = if is_table {
+            egui::Direction::LeftToRight
+        } else {
+            state.flow
+        };
         let response = egui_graph::node::Node::from_id(node_id)
             .inputs(inputs)
             .outputs(outputs)
-            .flow(state.flow)
+            .flow(flow)
             .socket_radius(state.socket_radius)
             .socket_color(state.socket_color)
             .show(nctx, ui, |node_ctx| {
-                node_ctx.framed(|ui| match node.kind {
+                node_ctx.framed(|ui, sockets| match node.kind {
                     NodeKind::Label => {
                         ui.label(&node.name);
                     }
@@ -260,6 +279,24 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
                     }
                     NodeKind::Comment(ref mut text) => {
                         ui.text_edit_multiline(text);
+                    }
+                    NodeKind::Table {
+                        ref mut color,
+                        ref mut alpha,
+                    } => {
+                        ui.label(&node.name);
+                        sockets.row(ui, Some(0), Some(0), |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Color");
+                                ui.add(egui::Slider::new(color, 0.0..=1.0));
+                            });
+                        });
+                        sockets.row(ui, Some(1), None, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Alpha");
+                                ui.add(egui::Slider::new(alpha, 0.0..=1.0));
+                            });
+                        });
                     }
                 })
             });
