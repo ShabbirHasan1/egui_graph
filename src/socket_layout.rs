@@ -30,20 +30,32 @@ impl SocketLayout {
         }
     }
 
+    /// Set an input socket's explicit cross-axis position.
+    ///
+    /// Switches to explicit positioning on first call.
+    pub fn input_at(&mut self, ix: usize, cross: f32) {
+        self.inputs.set_explicit(ix, cross);
+    }
+
+    /// Set an output socket's explicit cross-axis position.
+    ///
+    /// Switches to explicit positioning on first call.
+    pub fn output_at(&mut self, ix: usize, cross: f32) {
+        self.outputs.set_explicit(ix, cross);
+    }
+
     /// Register an input socket aligned with the cross-axis center of `rect`.
     ///
     /// Switches to explicit positioning on first call.
     pub fn input(&mut self, ix: usize, rect: egui::Rect) {
-        let cross = cross_axis_center(self.flow, rect);
-        self.inputs.set_explicit(ix, cross);
+        self.input_at(ix, cross_axis_center(self.flow, rect));
     }
 
     /// Register an output socket aligned with the cross-axis center of `rect`.
     ///
     /// Switches to explicit positioning on first call.
     pub fn output(&mut self, ix: usize, rect: egui::Rect) {
-        let cross = cross_axis_center(self.flow, rect);
-        self.outputs.set_explicit(ix, cross);
+        self.output_at(ix, cross_axis_center(self.flow, rect));
     }
 
     /// Render content in a `ui.scope`, registering sockets aligned with its
