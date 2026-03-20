@@ -1,3 +1,5 @@
+pub mod grid;
+
 use crate::NodeSockets;
 use std::collections::BTreeMap;
 

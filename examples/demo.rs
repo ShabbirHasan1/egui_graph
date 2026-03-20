@@ -277,22 +277,19 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
                     NodeKind::Mixer {
                         ref mut color,
                         ref mut alpha,
-                    } => match state.flow {
-                        egui::Direction::LeftToRight | egui::Direction::RightToLeft => {
-                            sockets.row(ui, Some(0), None, |ui| {
-                                ui.horizontal(|ui| {
+                    } => {
+                        if state.flow.is_horizontal() {
+                            sockets.grid(egui::Grid::new("mixer"), ui, |grid, ui| {
+                                grid.row(ui, Some(0), None, |ui| {
                                     ui.label("Color");
                                     ui.add(egui::Slider::new(color, 0.0..=1.0));
                                 });
-                            });
-                            sockets.row(ui, Some(1), Some(0), |ui| {
-                                ui.horizontal(|ui| {
+                                grid.row(ui, Some(1), Some(0), |ui| {
                                     ui.label("Alpha");
                                     ui.add(egui::Slider::new(alpha, 0.0..=1.0));
                                 });
                             });
-                        }
-                        egui::Direction::TopDown | egui::Direction::BottomUp => {
+                        } else if state.flow.is_vertical() {
                             ui.horizontal(|ui| {
                                 sockets.col(ui, Some(0), None, |ui| {
                                     ui.add(
@@ -310,7 +307,7 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
                                 });
                             });
                         }
-                    },
+                    }
                 })
             });
 
