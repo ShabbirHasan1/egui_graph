@@ -81,6 +81,15 @@ pub struct NodeResponse<T> {
     edge_event: Option<EdgeEvent>,
 }
 
+/// The response returned by [`NodeCtx::framed`] and [`NodeCtx::framed_with`].
+///
+/// Carries the content's [`egui::InnerResponse`] alongside the
+/// [`SocketLayout`] describing socket positions for this node.
+pub struct FramedResponse<T> {
+    pub inner: egui::InnerResponse<T>,
+    pub sockets: crate::SocketLayout,
+}
+
 /// Events related to the creation of an edge to or from a node.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EdgeEvent {
@@ -200,7 +209,7 @@ impl Node {
         self,
         ctx: &mut NodesCtx,
         ui: &mut egui::Ui,
-        content: impl FnOnce(NodeCtx<'_>) -> (egui::InnerResponse<R>, crate::SocketLayout),
+        content: impl FnOnce(NodeCtx<'_>) -> FramedResponse<R>,
     ) -> NodeResponse<R> {
         self.show_impl(ctx, ui, Box::new(content) as Box<_>)
     }
@@ -209,7 +218,7 @@ impl Node {
         self,
         ctx: &mut NodesCtx,
         ui: &mut egui::Ui,
-        content: Box<dyn FnOnce(NodeCtx<'_>) -> (egui::InnerResponse<R>, crate::SocketLayout) + 'a>,
+        content: Box<dyn FnOnce(NodeCtx<'_>) -> FramedResponse<R> + 'a>,
     ) -> NodeResponse<R> {
         let layout = &mut ctx.layout;
 
@@ -363,7 +372,10 @@ impl Node {
 
         // Take the union of the ui scope and the frame response to monitor for
         // interactions.
-        let (content_inner_response, socket_layout) = inner_response.inner;
+        let FramedResponse {
+            inner: content_inner_response,
+            sockets: socket_layout,
+        } = inner_response.inner;
         let mut response = inner_response
             .response
             .union(content_inner_response.response);
@@ -679,7 +691,8 @@ impl<'a> NodeCtx<'a> {
     ///
     /// This consumes the context, ensuring content is only added once.
     ///
-    /// Returns the combined response and socket layout. The response:
+    /// Returns a [`FramedResponse`] containing the combined response and
+    /// socket layout. The response:
     /// - Has a rect covering the entire framed area.
     /// - Reports interactions (clicks, drags, hovers) on any part of the node.
     /// - Is used by [`Node::show`] for selection and drag handling.
@@ -692,7 +705,7 @@ impl<'a> NodeCtx<'a> {
     pub fn framed<T>(
         self,
         content: impl FnOnce(&mut egui::Ui, &mut crate::SocketLayout) -> T,
-    ) -> (egui::InnerResponse<T>, crate::SocketLayout) {
+    ) -> FramedResponse<T> {
         let frame = default_frame(self.style(), self.interaction);
         self.framed_with(frame, content)
     }
@@ -701,7 +714,8 @@ impl<'a> NodeCtx<'a> {
     ///
     /// This consumes the context, ensuring content is only added once.
     ///
-    /// Returns the combined response and socket layout. The response:
+    /// Returns a [`FramedResponse`] containing the combined response and
+    /// socket layout. The response:
     /// - Has a rect covering the entire framed area.
     /// - Reports interactions (clicks, drags, hovers) on any part of the node.
     /// - Is used by [`Node::show`] for selection and drag handling.
@@ -715,7 +729,7 @@ impl<'a> NodeCtx<'a> {
         self,
         frame: egui::Frame,
         content: impl FnOnce(&mut egui::Ui, &mut crate::SocketLayout) -> T,
-    ) -> (egui::InnerResponse<T>, crate::SocketLayout) {
+    ) -> FramedResponse<T> {
         let min_size = self.min_size;
         let immutable = self.immutable;
         let mut socket_layout =
@@ -734,10 +748,10 @@ impl<'a> NodeCtx<'a> {
         });
         let response = inner_response.response.union(inner_response.inner.response);
         let content_output = inner_response.inner.inner;
-        (
-            egui::InnerResponse::new(content_output, response),
-            socket_layout,
-        )
+        FramedResponse {
+            inner: egui::InnerResponse::new(content_output, response),
+            sockets: socket_layout,
+        }
     }
 }
 

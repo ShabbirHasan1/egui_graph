@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "layout")]
 pub use layout::layout;
-pub use node::{NodeCtx, NodeId, NodeInteraction};
+pub use node::{FramedResponse, NodeCtx, NodeId, NodeInteraction};
 pub use socket_layout::{grid::SocketGrid, SocketLayout};
 
 pub mod bezier;
