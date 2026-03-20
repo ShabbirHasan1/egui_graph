@@ -718,7 +718,8 @@ impl<'a> NodeCtx<'a> {
     ) -> (egui::InnerResponse<T>, crate::SocketLayout) {
         let min_size = self.min_size;
         let immutable = self.immutable;
-        let mut socket_layout = crate::SocketLayout::auto(self.flow, self.inputs, self.outputs);
+        let mut socket_layout =
+            crate::SocketLayout::evenly_spaced(self.flow, self.inputs, self.outputs);
         let builder = egui::UiBuilder::new().sense(egui::Sense::click_and_drag());
         let inner_response = frame.show(self.ui, |ui| {
             ui.scope_builder(builder, |ui| {

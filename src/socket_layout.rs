@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 
 /// Controls how socket positions are determined for a node.
 ///
-/// Pre-initialized as `Auto` from the `Node` builder's input/output counts.
+/// Pre-initialized as `EvenlySpaced` from the `Node` builder's input/output counts.
 /// Users can ignore it for automatic spacing, or switch to explicit positioning
-/// via [`SocketLayout::input`], [`SocketLayout::output`], or [`SocketLayout::row`].
+/// via [`SocketLayout::input`], [`SocketLayout::output`], [`SocketLayout::row`],
+/// or [`SocketLayout::col`].
 pub struct SocketLayout {
     flow: egui::Direction,
     inputs: SocketPositions,
@@ -14,18 +15,18 @@ pub struct SocketLayout {
 
 enum SocketPositions {
     /// Evenly spaced along the edge (current behavior).
-    Auto(usize),
+    EvenlySpaced(usize),
     /// Explicit cross-axis positions. Only positioned sockets are rendered.
     Explicit(BTreeMap<usize, f32>),
 }
 
 impl SocketLayout {
-    /// Create a new `SocketLayout` in auto mode with the given socket counts.
-    pub fn auto(flow: egui::Direction, inputs: usize, outputs: usize) -> Self {
+    /// Create a new `SocketLayout` that evenly spaces sockets along the node edge.
+    pub fn evenly_spaced(flow: egui::Direction, inputs: usize, outputs: usize) -> Self {
         Self {
             flow,
-            inputs: SocketPositions::Auto(inputs),
-            outputs: SocketPositions::Auto(outputs),
+            inputs: SocketPositions::EvenlySpaced(inputs),
+            outputs: SocketPositions::EvenlySpaced(outputs),
         }
     }
 
@@ -46,8 +47,8 @@ impl SocketLayout {
     }
 
     /// Render content in a `ui.scope`, registering sockets aligned with its
-    /// cross-axis center.
-    pub fn row<R>(
+    /// cross-axis center. Shared logic for `row` and `col`.
+    fn aligned<R>(
         &mut self,
         ui: &mut egui::Ui,
         input: Option<usize>,
@@ -62,6 +63,28 @@ impl SocketLayout {
             self.output(ix, ir.response.rect);
         }
         ir
+    }
+
+    /// Register sockets aligned with a row of content (horizontal flows).
+    pub fn row<R>(
+        &mut self,
+        ui: &mut egui::Ui,
+        input: Option<usize>,
+        output: Option<usize>,
+        content: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::InnerResponse<R> {
+        self.aligned(ui, input, output, content)
+    }
+
+    /// Register sockets aligned with a column of content (vertical flows).
+    pub fn col<R>(
+        &mut self,
+        ui: &mut egui::Ui,
+        input: Option<usize>,
+        output: Option<usize>,
+        content: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::InnerResponse<R> {
+        self.aligned(ui, input, output, content)
     }
 
     /// Resolve the layout into concrete `NodeSockets` given the final frame
@@ -85,7 +108,7 @@ impl SocketLayout {
 impl SocketPositions {
     fn set_explicit(&mut self, ix: usize, cross: f32) {
         match self {
-            SocketPositions::Auto(_) => {
+            SocketPositions::EvenlySpaced(_) => {
                 let mut map = BTreeMap::new();
                 map.insert(ix, cross);
                 *self = SocketPositions::Explicit(map);
@@ -114,13 +137,15 @@ fn resolve_positions(
     is_input: bool,
 ) -> BTreeMap<usize, egui::Pos2> {
     match positions {
-        SocketPositions::Auto(count) => resolve_auto(*count, flow, rect, socket_padding, is_input),
+        SocketPositions::EvenlySpaced(count) => {
+            resolve_evenly_spaced(*count, flow, rect, socket_padding, is_input)
+        }
         SocketPositions::Explicit(map) => resolve_explicit(map, flow, rect, is_input),
     }
 }
 
-/// Auto mode: evenly space sockets along the edge (existing behavior).
-fn resolve_auto(
+/// Evenly space sockets along the edge.
+fn resolve_evenly_spaced(
     count: usize,
     flow: egui::Direction,
     rect: egui::Rect,

@@ -59,8 +59,8 @@ enum NodeKind {
     Slider(f32),
     DragValue(f32),
     Comment(String),
-    /// A table-style node with row-aligned sockets (Blender-style).
-    Table {
+    /// A mixer-style node with content-aligned sockets.
+    Mixer {
         color: f32,
         alpha: f32,
     },
@@ -120,7 +120,7 @@ fn new_graph() -> Graph {
     let e = graph.add_node(node("Fiz", NodeKind::Comment(comment.to_string())));
     let f = graph.add_node(node(
         "Mix",
-        NodeKind::Table {
+        NodeKind::Mixer {
             color: 0.5,
             alpha: 1.0,
         },
@@ -245,16 +245,10 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
         let node = &mut state.graph[n];
         let node_id = egui_graph::NodeId::from_u64(n.index() as u64);
         state.node_id_map.insert(node_id, n);
-        let is_table = matches!(node.kind, NodeKind::Table { .. });
-        let flow = if is_table {
-            egui::Direction::LeftToRight
-        } else {
-            state.flow
-        };
         let response = egui_graph::node::Node::from_id(node_id)
             .inputs(inputs)
             .outputs(outputs)
-            .flow(flow)
+            .flow(state.flow)
             .socket_radius(state.socket_radius)
             .socket_color(state.socket_color)
             .show(nctx, ui, |node_ctx| {
@@ -280,24 +274,43 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
                     NodeKind::Comment(ref mut text) => {
                         ui.text_edit_multiline(text);
                     }
-                    NodeKind::Table {
+                    NodeKind::Mixer {
                         ref mut color,
                         ref mut alpha,
-                    } => {
-                        ui.label(&node.name);
-                        sockets.row(ui, Some(0), Some(0), |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Color");
-                                ui.add(egui::Slider::new(color, 0.0..=1.0));
+                    } => match state.flow {
+                        egui::Direction::LeftToRight | egui::Direction::RightToLeft => {
+                            sockets.row(ui, Some(0), None, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Color");
+                                    ui.add(egui::Slider::new(color, 0.0..=1.0));
+                                });
                             });
-                        });
-                        sockets.row(ui, Some(1), None, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Alpha");
-                                ui.add(egui::Slider::new(alpha, 0.0..=1.0));
+                            sockets.row(ui, Some(1), Some(0), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Alpha");
+                                    ui.add(egui::Slider::new(alpha, 0.0..=1.0));
+                                });
                             });
-                        });
-                    }
+                        }
+                        egui::Direction::TopDown | egui::Direction::BottomUp => {
+                            ui.horizontal(|ui| {
+                                sockets.col(ui, Some(0), None, |ui| {
+                                    ui.add(
+                                        egui::Slider::new(color, 0.0..=1.0)
+                                            .vertical()
+                                            .show_value(false),
+                                    );
+                                });
+                                sockets.col(ui, Some(1), Some(0), |ui| {
+                                    ui.add(
+                                        egui::Slider::new(alpha, 0.0..=1.0)
+                                            .vertical()
+                                            .show_value(false),
+                                    );
+                                });
+                            });
+                        }
+                    },
                 })
             });
 
