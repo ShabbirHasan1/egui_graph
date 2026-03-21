@@ -306,10 +306,18 @@ impl Node {
         let put_size = egui::Vec2::new(max_size.x, min_size.y);
         let put_rect = egui::Rect::from_min_size(pos_graph, put_size);
 
-        // Put the node's frame on a layer above the scene's UI layer.
         let scene_layer = ui.layer_id();
         let node_id = self.id;
         let egui_id = egui_id(ctx.graph_id, node_id);
+
+        // Socket layer below the frame so node content takes interaction precedence.
+        let socket_layer = egui::LayerId::new(scene_layer.order, egui_id.with("sockets"));
+        ui.ctx().set_sublayer(scene_layer, socket_layer);
+        if let Some(transform) = ui.ctx().layer_transform_to_global(scene_layer) {
+            ui.ctx().set_transform_layer(socket_layer, transform);
+        }
+
+        // Frame layer on top.
         let frame_layer = egui::LayerId::new(scene_layer.order, egui_id);
         ui.ctx().set_sublayer(scene_layer, frame_layer);
         if let Some(transform) = ui.ctx().layer_transform_to_global(scene_layer) {
@@ -457,7 +465,7 @@ impl Node {
             ctx.graph_id,
             self.id,
             egui_id,
-            frame_layer,
+            socket_layer,
             response.rect,
             &node_sockets,
             socket_color,

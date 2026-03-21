@@ -70,7 +70,7 @@ pub(crate) fn show(
     graph_id: egui::Id,
     node_id: NodeId,
     egui_id: egui::Id,
-    frame_layer: egui::LayerId,
+    socket_layer: egui::LayerId,
     frame_rect: egui::Rect,
     node_sockets: &crate::NodeSockets,
     socket_color: egui::Color32,
@@ -109,13 +109,7 @@ pub(crate) fn show(
         (None, None)
     };
 
-    // Phase B: Create socket layer, interact and paint each socket.
-    let socket_layer_id = egui::LayerId::new(frame_layer.order, egui_id.with("sockets"));
-    ui.ctx().set_sublayer(frame_layer, socket_layer_id);
-    if let Some(transform) = ui.ctx().layer_transform_to_global(frame_layer) {
-        ui.ctx().set_transform_layer(socket_layer_id, transform);
-    }
-
+    // Phase B: Paint and interact with each socket on the pre-created socket layer.
     let hl_size = (socket_radius + 4.0).max(4.0);
     let interact_diameter = ui
         .spacing()
@@ -139,7 +133,7 @@ pub(crate) fn show(
 
     let builder = egui::UiBuilder::new()
         .max_rect(frame_rect.expand(hl_size))
-        .layer_id(socket_layer_id);
+        .layer_id(socket_layer);
 
     let mut input_responses = std::collections::BTreeMap::new();
     let mut output_responses = std::collections::BTreeMap::new();
