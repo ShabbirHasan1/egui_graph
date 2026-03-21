@@ -74,6 +74,7 @@ pub struct PositionedSocket {
 /// An extension around the `egui::Response` that indicates node selection.
 pub struct NodeResponse<T> {
     response: egui::InnerResponse<T>,
+    sockets: SocketResponses,
     selection_changed: bool,
     selected: bool,
     removed: bool,
@@ -88,6 +89,37 @@ pub struct NodeResponse<T> {
 pub struct FramedResponse<T> {
     pub inner: egui::InnerResponse<T>,
     pub sockets: crate::SocketLayout,
+}
+
+/// Collected [`egui::Response`]s for all sockets on a node.
+///
+/// Each socket is allocated as an interactive widget (with [`egui::Sense::hover`]),
+/// enabling standard egui interactions like tooltips and hover detection.
+pub struct SocketResponses {
+    inputs: std::collections::BTreeMap<usize, egui::Response>,
+    outputs: std::collections::BTreeMap<usize, egui::Response>,
+}
+
+impl SocketResponses {
+    /// The response for the input socket at the given index.
+    pub fn input(&self, ix: usize) -> Option<&egui::Response> {
+        self.inputs.get(&ix)
+    }
+
+    /// The response for the output socket at the given index.
+    pub fn output(&self, ix: usize) -> Option<&egui::Response> {
+        self.outputs.get(&ix)
+    }
+
+    /// Iterator over all input socket responses, yielding `(index, response)`.
+    pub fn inputs(&self) -> impl Iterator<Item = (usize, &egui::Response)> {
+        self.inputs.iter().map(|(&ix, r)| (ix, r))
+    }
+
+    /// Iterator over all output socket responses, yielding `(index, response)`.
+    pub fn outputs(&self) -> impl Iterator<Item = (usize, &egui::Response)> {
+        self.outputs.iter().map(|(&ix, r)| (ix, r))
+    }
 }
 
 /// Events related to the creation of an edge to or from a node.
@@ -475,13 +507,14 @@ impl Node {
         // Resolve the socket layout to concrete positions.
         let node_sockets = socket_layout.resolve(self.flow, response.rect, socket_padding);
 
-        // Store resolved sockets and paint them.
-        if !node_sockets.inputs.is_empty() || !node_sockets.outputs.is_empty() {
+        // Phase A: Store resolved sockets and extract highlight state, then drop the lock.
+        let (pressed_socket, closest_socket) = if !node_sockets.inputs.is_empty()
+            || !node_sockets.outputs.is_empty()
+        {
             let gmem_arc = crate::memory(ui, ctx.graph_id);
             let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
             gmem.sockets.insert(self.id, node_sockets.clone());
 
-            // Check whether or not this node has a pressed socket.
             let pressed_socket = gmem
                 .pressed
                 .as_ref()
@@ -492,11 +525,8 @@ impl Node {
                     _ => None,
                 });
 
-            // Check if the mouse is closest to one of this node's sockets.
             let closest_socket = match gmem.closest_socket {
                 Some(closest) if closest.node == self.id => {
-                    // If there is a pressed socket, only highlight if this socket is of the
-                    // opposite kind.
                     match gmem.pressed.as_ref().map(|p| &p.action) {
                         Some(crate::PressAction::Socket(socket)) if closest.kind == socket.kind => {
                             None
@@ -507,7 +537,27 @@ impl Node {
                 _ => None,
             };
 
-            // Whether or not to paint the highlight.
+            (pressed_socket, closest_socket)
+        } else {
+            (None, None)
+        };
+
+        // Phase B: Create socket layer, interact and paint each socket.
+        let socket_responses = {
+            let socket_layer_id = egui::LayerId::new(frame_layer.order, egui_id.with("sockets"));
+            ui.ctx().set_sublayer(frame_layer, socket_layer_id);
+            if let Some(transform) = ui.ctx().layer_transform_to_global(frame_layer) {
+                ui.ctx().set_transform_layer(socket_layer_id, transform);
+            }
+
+            let color = self.socket_color.unwrap_or(ui.visuals().text_color());
+            let hl_size = (self.socket_radius + 4.0).max(4.0);
+            let interact_diameter = ui
+                .spacing()
+                .interact_size
+                .x
+                .min(ui.spacing().interact_size.y);
+
             let paint_highlight = |kind, ix| {
                 if let Some((k, i)) = pressed_socket {
                     if k == kind && i == ix {
@@ -522,22 +572,42 @@ impl Node {
                 false
             };
 
-            let color = self.socket_color.unwrap_or(ui.visuals().text_color());
-            let hl_size = (self.socket_radius + 4.0).max(4.0);
-            let painter = ui.painter();
-            for (ix, pos, _) in node_sockets.inputs() {
-                if paint_highlight(SocketKind::Input, ix) {
-                    painter.circle_filled(pos, hl_size, color.linear_multiply(0.25));
+            let builder = egui::UiBuilder::new()
+                .max_rect(response.rect.expand(hl_size))
+                .layer_id(socket_layer_id);
+
+            let mut input_responses = std::collections::BTreeMap::new();
+            let mut output_responses = std::collections::BTreeMap::new();
+
+            ui.scope_builder(builder, |ui| {
+                let painter = ui.painter();
+                for (ix, pos, _) in node_sockets.inputs() {
+                    if paint_highlight(SocketKind::Input, ix) {
+                        painter.circle_filled(pos, hl_size, color.linear_multiply(0.25));
+                    }
+                    painter.circle_filled(pos, self.socket_radius, color);
+                    let id = egui_id.with("in").with(ix);
+                    let rect =
+                        egui::Rect::from_center_size(pos, egui::Vec2::splat(interact_diameter));
+                    input_responses.insert(ix, ui.interact(rect, id, egui::Sense::hover()));
                 }
-                painter.circle_filled(pos, self.socket_radius, color);
-            }
-            for (ix, pos, _) in node_sockets.outputs() {
-                if paint_highlight(SocketKind::Output, ix) {
-                    painter.circle_filled(pos, hl_size, color.linear_multiply(0.25));
+                for (ix, pos, _) in node_sockets.outputs() {
+                    if paint_highlight(SocketKind::Output, ix) {
+                        painter.circle_filled(pos, hl_size, color.linear_multiply(0.25));
+                    }
+                    painter.circle_filled(pos, self.socket_radius, color);
+                    let id = egui_id.with("out").with(ix);
+                    let rect =
+                        egui::Rect::from_center_size(pos, egui::Vec2::splat(interact_diameter));
+                    output_responses.insert(ix, ui.interact(rect, id, egui::Sense::hover()));
                 }
-                painter.circle_filled(pos, self.socket_radius, color);
+            });
+
+            SocketResponses {
+                inputs: input_responses,
+                outputs: output_responses,
             }
-        }
+        };
 
         // If the delete or backspace key was pressed and the node is selected, remove it.
         // Skip when immutable.
@@ -569,6 +639,7 @@ impl Node {
 
         NodeResponse {
             response: egui::InnerResponse::new(content_output, response),
+            sockets: socket_responses,
             selection_changed,
             selected,
             removed,
@@ -643,6 +714,11 @@ impl<R> NodeResponse<R> {
     /// Whether or not any events occurred related to the creation of an edge.
     pub fn edge_event(&self) -> Option<EdgeEvent> {
         self.edge_event
+    }
+
+    /// The collected [`egui::Response`]s for each socket on this node.
+    pub fn sockets(&self) -> &SocketResponses {
+        &self.sockets
     }
 }
 
