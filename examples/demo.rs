@@ -1,5 +1,6 @@
 use eframe::egui;
-use egui_graph::node::{EdgeEvent, SocketKind};
+use egui_graph::node::EdgeEvent;
+use egui_graph::SocketKind;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, HashSet};

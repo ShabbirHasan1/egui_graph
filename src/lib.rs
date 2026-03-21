@@ -4,15 +4,16 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "layout")]
 pub use layout::layout;
-pub use node::{FramedResponse, NodeCtx, NodeId, NodeInteraction, SocketResponses};
-pub use socket_layout::{grid::SocketGrid, SocketLayout};
+pub use node::{FramedResponse, NodeCtx, NodeId, NodeInteraction};
+pub use socket::layout::{grid::SocketGrid, SocketLayout};
+pub use socket::{SocketKind, SocketResponses};
 
 pub mod bezier;
 pub mod edge;
 #[cfg(feature = "layout")]
 pub mod layout;
 pub mod node;
-pub mod socket_layout;
+pub mod socket;
 
 /// The main interface for the `Graph` widget.
 pub struct Graph {
@@ -55,7 +56,7 @@ pub struct GraphTempMemory {
     /// The socket that is currently closest to the mouse.
     ///
     /// Always `Some` while the pointer is over the graph area, `None` otherwise.
-    closest_socket: Option<node::Socket>,
+    closest_socket: Option<socket::Socket>,
 }
 
 type NodeSizes = HashMap<NodeId, egui::Vec2>;
@@ -99,7 +100,7 @@ enum PressAction {
     /// The graph was pressed and we are performing a selection.
     Select,
     /// A node's socket was pressed in order to start creating a connection.
-    Socket(node::Socket),
+    Socket(socket::Socket),
 }
 
 #[derive(Clone, Debug)]
@@ -135,9 +136,9 @@ pub struct Show<'a> {
     /// Whether or not the primary mouse button was just released to perform the selection.
     select: bool,
     /// The closest socket within pressable range of the pointer.
-    closest_socket: Option<node::Socket>,
+    closest_socket: Option<socket::Socket>,
     /// Whether or not the primary mouse button was just released to end edge creation.
-    socket_press_released: Option<node::Socket>,
+    socket_press_released: Option<socket::Socket>,
     /// Track all nodes that were visited this update.
     ///
     /// We will use this to remove old node state on `drop`.
@@ -161,7 +162,7 @@ pub struct NodesCtx<'a> {
     graph_rect: egui::Rect,
     selection_rect: Option<egui::Rect>,
     select: bool,
-    socket_press_released: Option<node::Socket>,
+    socket_press_released: Option<socket::Socket>,
     visited: &'a mut HashSet<NodeId>,
     layout: &'a mut Layout,
     /// Whether the graph is in immutable (view-only) mode.
@@ -173,7 +174,7 @@ pub struct EdgesCtx {
     graph_id: egui::Id,
     graph_rect: egui::Rect,
     selection_rect: Option<egui::Rect>,
-    closest_socket: Option<node::Socket>,
+    closest_socket: Option<socket::Socket>,
     /// Whether the graph is in immutable (view-only) mode.
     pub immutable: bool,
 }
@@ -182,7 +183,7 @@ pub struct EdgesCtx {
 /// to node interaction.
 struct GraphInteraction {
     pressed: Option<Pressed>,
-    socket_press_released: Option<node::Socket>,
+    socket_press_released: Option<socket::Socket>,
     select: bool,
     selection_rect: Option<egui::Rect>,
     drag_nodes_delta: egui::Vec2,
@@ -594,7 +595,7 @@ fn prune_unused_nodes(graph_id: egui::Id, visited: &HashSet<NodeId>, ui: &mut eg
             PressAction::DragNodes {
                 node: Some(PressedNode { id: n, .. }),
             }
-            | PressAction::Socket(node::Socket { node: n, .. })
+            | PressAction::Socket(socket::Socket { node: n, .. })
                 if !visited.contains(&n) =>
             {
                 gmem.pressed = None
@@ -646,10 +647,10 @@ impl EdgesCtx {
             PressAction::Socket(socket) => {
                 let sockets = gmem.sockets.get(&socket.node)?;
                 let (pos, normal) = match socket.kind {
-                    node::SocketKind::Input => sockets.input(socket.index)?,
-                    node::SocketKind::Output => sockets.output(socket.index)?,
+                    socket::SocketKind::Input => sockets.input(socket.index)?,
+                    socket::SocketKind::Output => sockets.output(socket.index)?,
                 };
-                node::PositionedSocket {
+                socket::PositionedSocket {
                     socket,
                     pos,
                     normal,
@@ -661,8 +662,8 @@ impl EdgesCtx {
             Some(socket) if socket.kind != start.socket.kind => {
                 let sockets = gmem.sockets.get(&socket.node)?;
                 let (pos, normal) = match socket.kind {
-                    node::SocketKind::Input => sockets.input(socket.index)?,
-                    node::SocketKind::Output => sockets.output(socket.index)?,
+                    socket::SocketKind::Input => sockets.input(socket.index)?,
+                    socket::SocketKind::Output => sockets.output(socket.index)?,
                 };
                 (pos, Some((socket.kind, normal)))
             }
@@ -683,7 +684,7 @@ impl EdgesCtx {
 
 pub struct EdgeInProgress {
     /// The socket at the start end of the edge.
-    pub start: node::PositionedSocket,
+    pub start: socket::PositionedSocket,
     /// The end position of the edge in progress.
     ///
     /// If there is no socket within the interaction radius, this will be the pointer position.
@@ -693,7 +694,7 @@ pub struct EdgeInProgress {
     /// The closest socket who's `SocketKind` is opposite to `start.kind`.
     ///
     /// This is `None` in the case that there are no sockets within the interaction radius.
-    pub end_socket: Option<(node::SocketKind, egui::Vec2)>,
+    pub end_socket: Option<(socket::SocketKind, egui::Vec2)>,
 }
 
 impl EdgeInProgress {
@@ -739,7 +740,7 @@ fn find_closest_socket(
     layout: &Layout,
     gmem: &GraphTempMemory,
     ui: &egui::Ui,
-) -> Option<(node::Socket, f32)> {
+) -> Option<(socket::Socket, f32)> {
     // TODO: if we wanted to be super efficient, we could maintain a quadtree of
     // nodes and sockets...
     let mut closest_socket = None;
@@ -770,9 +771,9 @@ fn find_closest_socket(
         for (ix, p, _) in sockets.inputs() {
             let dist_sq = pos_graph.distance_sq(p);
             if dist_sq < socket_radius_sq {
-                let socket = node::Socket {
+                let socket = socket::Socket {
                     node: n_id,
-                    kind: node::SocketKind::Input,
+                    kind: socket::SocketKind::Input,
                     index: ix,
                 };
                 closest_socket = match closest_socket {
@@ -787,9 +788,9 @@ fn find_closest_socket(
         for (ix, p, _) in sockets.outputs() {
             let dist_sq = pos_graph.distance_sq(p);
             if dist_sq < socket_radius_sq {
-                let socket = node::Socket {
+                let socket = socket::Socket {
                     node: n_id,
-                    kind: node::SocketKind::Output,
+                    kind: socket::SocketKind::Output,
                     index: ix,
                 };
                 closest_socket = match closest_socket {
@@ -808,7 +809,7 @@ fn find_closest_socket(
 fn graph_interaction(
     layout: &Layout,
     pointer: &egui::PointerState,
-    closest_socket: Option<node::Socket>,
+    closest_socket: Option<socket::Socket>,
     ptr_on_graph: bool,
     ptr_graph: egui::Pos2,
     pressed: Option<&Pressed>,
