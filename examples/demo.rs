@@ -59,6 +59,11 @@ enum NodeKind {
     Slider(f32),
     DragValue(f32),
     Comment(String),
+    /// A mixer-style node with content-aligned sockets.
+    Mixer {
+        color: f32,
+        alpha: f32,
+    },
 }
 
 impl App {
@@ -113,11 +118,19 @@ fn new_graph() -> Graph {
     let comment = "Nodes are a thin wrapper around the `egui::Window`, \
         allowing you to set arbitrary widgets.";
     let e = graph.add_node(node("Fiz", NodeKind::Comment(comment.to_string())));
+    let f = graph.add_node(node(
+        "Mix",
+        NodeKind::Mixer {
+            color: 0.5,
+            alpha: 1.0,
+        },
+    ));
     graph.add_edge(a, c, (0, 0));
     graph.add_edge(a, d, (1, 1));
     graph.add_edge(b, d, (0, 2));
     graph.add_edge(c, d, (0, 0));
     graph.add_edge(d, e, (0, 0));
+    graph.add_edge(d, f, (0, 0));
     graph
 }
 
@@ -239,7 +252,7 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
             .socket_radius(state.socket_radius)
             .socket_color(state.socket_color)
             .show(nctx, ui, |node_ctx| {
-                node_ctx.framed(|ui| match node.kind {
+                node_ctx.framed(|ui, sockets| match node.kind {
                     NodeKind::Label => {
                         ui.label(&node.name);
                     }
@@ -260,6 +273,40 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
                     }
                     NodeKind::Comment(ref mut text) => {
                         ui.text_edit_multiline(text);
+                    }
+                    NodeKind::Mixer {
+                        ref mut color,
+                        ref mut alpha,
+                    } => {
+                        if state.flow.is_horizontal() {
+                            sockets.grid(egui::Grid::new("mixer"), ui, |grid, ui| {
+                                grid.row(ui, Some(0), None, |ui| {
+                                    ui.label("Color");
+                                    ui.add(egui::Slider::new(color, 0.0..=1.0));
+                                });
+                                grid.row(ui, Some(1), Some(0), |ui| {
+                                    ui.label("Alpha");
+                                    ui.add(egui::Slider::new(alpha, 0.0..=1.0));
+                                });
+                            });
+                        } else if state.flow.is_vertical() {
+                            ui.horizontal(|ui| {
+                                sockets.col(ui, Some(0), None, |ui| {
+                                    ui.add(
+                                        egui::Slider::new(color, 0.0..=1.0)
+                                            .vertical()
+                                            .show_value(false),
+                                    );
+                                });
+                                sockets.col(ui, Some(1), Some(0), |ui| {
+                                    ui.add(
+                                        egui::Slider::new(alpha, 0.0..=1.0)
+                                            .vertical()
+                                            .show_value(false),
+                                    );
+                                });
+                            });
+                        }
                     }
                 })
             });

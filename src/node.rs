@@ -81,6 +81,15 @@ pub struct NodeResponse<T> {
     edge_event: Option<EdgeEvent>,
 }
 
+/// The response returned by [`NodeCtx::framed`] and [`NodeCtx::framed_with`].
+///
+/// Carries the content's [`egui::InnerResponse`] alongside the
+/// [`SocketLayout`] describing socket positions for this node.
+pub struct FramedResponse<T> {
+    pub inner: egui::InnerResponse<T>,
+    pub sockets: crate::SocketLayout,
+}
+
 /// Events related to the creation of an edge to or from a node.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EdgeEvent {
@@ -104,6 +113,9 @@ pub struct NodeCtx<'a> {
     graph_id: egui::Id,
     node_id: NodeId,
     immutable: bool,
+    flow: egui::Direction,
+    inputs: usize,
+    outputs: usize,
 }
 
 impl Node {
@@ -188,7 +200,7 @@ impl Node {
     ///
     /// ```ignore
     /// Node::from_id(id).show(ctx, ui, |node_ctx| {
-    ///     node_ctx.framed(|ui| {
+    ///     node_ctx.framed(|ui, _sockets| {
     ///         ui.label("Hello");
     ///     })
     /// });
@@ -197,7 +209,7 @@ impl Node {
         self,
         ctx: &mut NodesCtx,
         ui: &mut egui::Ui,
-        content: impl FnOnce(NodeCtx<'_>) -> egui::InnerResponse<R>,
+        content: impl FnOnce(NodeCtx<'_>) -> FramedResponse<R>,
     ) -> NodeResponse<R> {
         self.show_impl(ctx, ui, Box::new(content) as Box<_>)
     }
@@ -206,7 +218,7 @@ impl Node {
         self,
         ctx: &mut NodesCtx,
         ui: &mut egui::Ui,
-        content: Box<dyn FnOnce(NodeCtx<'_>) -> egui::InnerResponse<R> + 'a>,
+        content: Box<dyn FnOnce(NodeCtx<'_>) -> FramedResponse<R> + 'a>,
     ) -> NodeResponse<R> {
         let layout = &mut ctx.layout;
 
@@ -351,14 +363,23 @@ impl Node {
                 graph_id: ctx.graph_id,
                 node_id,
                 immutable,
+                flow: self.flow,
+                inputs: self.inputs,
+                outputs: self.outputs,
             };
             content(node_ctx)
         });
 
         // Take the union of the ui scope and the frame response to monitor for
         // interactions.
-        let mut response = inner_response.response.union(inner_response.inner.response);
-        let content_output = inner_response.inner.inner;
+        let FramedResponse {
+            inner: content_inner_response,
+            sockets: socket_layout,
+        } = inner_response.inner;
+        let mut response = inner_response
+            .response
+            .union(content_inner_response.response);
+        let content_output = content_inner_response.inner;
 
         // Update the stored data for this node and check for edge events.
         let mut edge_event = None;
@@ -451,78 +472,14 @@ impl Node {
             }
         }
 
-        // The inlets/outlets.
-        if self.inputs > 0 || self.outputs > 0 {
-            let in_gap = |len: f32| {
-                if self.inputs > 1 {
-                    len / (self.inputs - 1) as f32
-                } else {
-                    0.0
-                }
-            };
-            let out_gap = |len: f32| {
-                if self.outputs > 1 {
-                    len / (self.outputs - 1) as f32
-                } else {
-                    0.0
-                }
-            };
-            let (mut in_pos, mut out_pos, in_step, out_step) = match self.flow {
-                egui::Direction::LeftToRight => {
-                    let len = response.rect.height() - socket_padding * 2.0;
-                    let in_step = egui::Vec2::new(0.0, in_gap(len));
-                    let out_step = egui::Vec2::new(0.0, out_gap(len));
-                    let start = response.rect.min.y + socket_padding;
-                    let in_pos = egui::Pos2::new(response.rect.min.x, start);
-                    let out_pos = egui::Pos2::new(response.rect.max.x, start);
-                    (in_pos, out_pos, in_step, out_step)
-                }
-                egui::Direction::RightToLeft => {
-                    let len = response.rect.height() - socket_padding * 2.0;
-                    let in_step = egui::Vec2::new(0.0, in_gap(len));
-                    let out_step = egui::Vec2::new(0.0, out_gap(len));
-                    let start = response.rect.min.y + socket_padding;
-                    let in_pos = egui::Pos2::new(response.rect.max.x, start);
-                    let out_pos = egui::Pos2::new(response.rect.min.x, start);
-                    (in_pos, out_pos, in_step, out_step)
-                }
-                egui::Direction::TopDown => {
-                    let len = response.rect.width() - socket_padding * 2.0;
-                    let in_step = egui::Vec2::new(in_gap(len), 0.0);
-                    let out_step = egui::Vec2::new(out_gap(len), 0.0);
-                    let start = response.rect.min.x + socket_padding;
-                    let in_pos = egui::Pos2::new(start, response.rect.min.y);
-                    let out_pos = egui::Pos2::new(start, response.rect.max.y);
-                    (in_pos, out_pos, in_step, out_step)
-                }
-                egui::Direction::BottomUp => {
-                    let len = response.rect.width() - socket_padding * 2.0;
-                    let in_step = egui::Vec2::new(in_gap(len), 0.0);
-                    let out_step = egui::Vec2::new(out_gap(len), 0.0);
-                    let start = response.rect.min.x + socket_padding;
-                    let in_pos = egui::Pos2::new(start, response.rect.max.y);
-                    let out_pos = egui::Pos2::new(start, response.rect.min.y);
-                    (in_pos, out_pos, in_step, out_step)
-                }
-            };
+        // Resolve the socket layout to concrete positions.
+        let node_sockets = socket_layout.resolve(self.flow, response.rect, socket_padding);
 
-            // Store the layout of the sockets for edge instantiation.
-            let sockets = crate::NodeSockets {
-                flow: self.flow,
-                input: crate::Sockets {
-                    count: self.inputs,
-                    start: in_pos,
-                    step: in_step,
-                },
-                output: crate::Sockets {
-                    count: self.outputs,
-                    start: out_pos,
-                    step: out_step,
-                },
-            };
+        // Store resolved sockets and paint them.
+        if !node_sockets.inputs.is_empty() || !node_sockets.outputs.is_empty() {
             let gmem_arc = crate::memory(ui, ctx.graph_id);
             let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
-            gmem.sockets.insert(self.id, sockets);
+            gmem.sockets.insert(self.id, node_sockets.clone());
 
             // Check whether or not this node has a pressed socket.
             let pressed_socket = gmem
@@ -568,19 +525,17 @@ impl Node {
             let color = self.socket_color.unwrap_or(ui.visuals().text_color());
             let hl_size = (self.socket_radius + 4.0).max(4.0);
             let painter = ui.painter();
-            for ix in 0..self.inputs {
+            for (ix, pos, _) in node_sockets.inputs() {
                 if paint_highlight(SocketKind::Input, ix) {
-                    painter.circle_filled(in_pos, hl_size, color.linear_multiply(0.25));
+                    painter.circle_filled(pos, hl_size, color.linear_multiply(0.25));
                 }
-                painter.circle_filled(in_pos, self.socket_radius, color);
-                in_pos += in_step;
+                painter.circle_filled(pos, self.socket_radius, color);
             }
-            for ix in 0..self.outputs {
+            for (ix, pos, _) in node_sockets.outputs() {
                 if paint_highlight(SocketKind::Output, ix) {
-                    painter.circle_filled(out_pos, hl_size, color.linear_multiply(0.25));
+                    painter.circle_filled(pos, hl_size, color.linear_multiply(0.25));
                 }
-                painter.circle_filled(out_pos, self.socket_radius, color);
-                out_pos += out_step;
+                painter.circle_filled(pos, self.socket_radius, color);
             }
         }
 
@@ -736,13 +691,21 @@ impl<'a> NodeCtx<'a> {
     ///
     /// This consumes the context, ensuring content is only added once.
     ///
-    /// Returns the combined response from the frame and content area. This response:
+    /// Returns a [`FramedResponse`] containing the combined response and
+    /// socket layout. The response:
     /// - Has a rect covering the entire framed area.
     /// - Reports interactions (clicks, drags, hovers) on any part of the node.
     /// - Is used by [`Node::show`] for selection and drag handling.
     ///
+    /// The content closure receives a `&mut SocketLayout` which can be used to
+    /// register explicit socket positions (e.g. via [`SocketLayout::row`]).
+    /// If left unmodified, sockets are evenly spaced along the node edge.
+    ///
     /// For custom frame styling, use [`NodeCtx::framed_with`].
-    pub fn framed<T>(self, content: impl FnOnce(&mut egui::Ui) -> T) -> egui::InnerResponse<T> {
+    pub fn framed<T>(
+        self,
+        content: impl FnOnce(&mut egui::Ui, &mut crate::SocketLayout) -> T,
+    ) -> FramedResponse<T> {
         let frame = default_frame(self.style(), self.interaction);
         self.framed_with(frame, content)
     }
@@ -751,19 +714,26 @@ impl<'a> NodeCtx<'a> {
     ///
     /// This consumes the context, ensuring content is only added once.
     ///
-    /// Returns the combined response from the frame and content area. This response:
+    /// Returns a [`FramedResponse`] containing the combined response and
+    /// socket layout. The response:
     /// - Has a rect covering the entire framed area.
     /// - Reports interactions (clicks, drags, hovers) on any part of the node.
     /// - Is used by [`Node::show`] for selection and drag handling.
+    ///
+    /// The content closure receives a `&mut SocketLayout` which can be used to
+    /// register explicit socket positions (e.g. via [`SocketLayout::row`]).
+    /// If left unmodified, sockets are evenly spaced along the node edge.
     ///
     /// For default frame styling, use [`NodeCtx::framed`].
     pub fn framed_with<T>(
         self,
         frame: egui::Frame,
-        content: impl FnOnce(&mut egui::Ui) -> T,
-    ) -> egui::InnerResponse<T> {
+        content: impl FnOnce(&mut egui::Ui, &mut crate::SocketLayout) -> T,
+    ) -> FramedResponse<T> {
         let min_size = self.min_size;
         let immutable = self.immutable;
+        let mut socket_layout =
+            crate::SocketLayout::evenly_spaced(self.flow, self.inputs, self.outputs);
         let builder = egui::UiBuilder::new().sense(egui::Sense::click_and_drag());
         let inner_response = frame.show(self.ui, |ui| {
             ui.scope_builder(builder, |ui| {
@@ -773,12 +743,15 @@ impl<'a> NodeCtx<'a> {
                 if immutable {
                     ui.disable();
                 }
-                content(ui)
+                content(ui, &mut socket_layout)
             })
         });
         let response = inner_response.response.union(inner_response.inner.response);
         let content_output = inner_response.inner.inner;
-        egui::InnerResponse::new(content_output, response)
+        FramedResponse {
+            inner: egui::InnerResponse::new(content_output, response),
+            sockets: socket_layout,
+        }
     }
 }
 

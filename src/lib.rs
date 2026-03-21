@@ -1,16 +1,18 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "layout")]
 pub use layout::layout;
-pub use node::{NodeCtx, NodeId, NodeInteraction};
+pub use node::{FramedResponse, NodeCtx, NodeId, NodeInteraction};
+pub use socket_layout::{grid::SocketGrid, SocketLayout};
 
 pub mod bezier;
 pub mod edge;
 #[cfg(feature = "layout")]
 pub mod layout;
 pub mod node;
+pub mod socket_layout;
 
 /// The main interface for the `Graph` widget.
 pub struct Graph {
@@ -149,16 +151,8 @@ pub struct Show<'a> {
 #[derive(Clone)]
 pub struct NodeSockets {
     flow: egui::Direction,
-    input: Sockets,
-    output: Sockets,
-}
-
-/// The description of how the inputs and outputs are laid out for a particular node.
-#[derive(Clone)]
-pub struct Sockets {
-    count: usize,
-    start: egui::Pos2,
-    step: egui::Vec2,
+    inputs: BTreeMap<usize, egui::Pos2>,
+    outputs: BTreeMap<usize, egui::Pos2>,
 }
 
 /// A context to assist with the instantiation of node widgets.
@@ -476,44 +470,48 @@ impl NodeSockets {
     ///
     /// Returns `None` if there is no input at the given index.
     pub fn input(&self, ix: usize) -> Option<(egui::Pos2, egui::Vec2)> {
-        if self.input.count <= ix {
-            return None;
-        }
-        let pos = self.input.start + self.input.step * ix as f32;
-        let norm = match self.flow {
-            egui::Direction::LeftToRight => egui::Vec2::new(-1.0, 0.0),
-            egui::Direction::RightToLeft => egui::Vec2::new(1.0, 0.0),
-            egui::Direction::TopDown => egui::Vec2::new(0.0, -1.0),
-            egui::Direction::BottomUp => egui::Vec2::new(0.0, 1.0),
-        };
-        Some((pos, norm))
+        self.inputs
+            .get(&ix)
+            .map(|&pos| (pos, input_normal(self.flow)))
     }
 
-    /// The screen position and normal of the input at the given index.
+    /// The screen position and normal of the output at the given index.
     ///
     /// Returns `None` if there is no output at the given index.
     pub fn output(&self, ix: usize) -> Option<(egui::Pos2, egui::Vec2)> {
-        if self.output.count <= ix {
-            return None;
-        }
-        let pos = self.output.start + self.output.step * ix as f32;
-        let norm = match self.flow {
-            egui::Direction::LeftToRight => egui::Vec2::new(1.0, 0.0),
-            egui::Direction::RightToLeft => egui::Vec2::new(-1.0, 0.0),
-            egui::Direction::TopDown => egui::Vec2::new(0.0, 1.0),
-            egui::Direction::BottomUp => egui::Vec2::new(0.0, -1.0),
-        };
-        Some((pos, norm))
+        self.outputs
+            .get(&ix)
+            .map(|&pos| (pos, output_normal(self.flow)))
     }
 
-    /// Produces an iterator yielding the position and normal for each input.
-    pub fn inputs<'a>(&'a self) -> impl 'a + Iterator<Item = (egui::Pos2, egui::Vec2)> {
-        (0..self.input.count).filter_map(move |ix| self.input(ix))
+    /// Produces an iterator yielding the index, position, and normal for each input.
+    pub fn inputs(&self) -> impl Iterator<Item = (usize, egui::Pos2, egui::Vec2)> + '_ {
+        let norm = input_normal(self.flow);
+        self.inputs.iter().map(move |(&ix, &pos)| (ix, pos, norm))
     }
 
-    /// Produces an iterator yielding the position and normal for each output.
-    pub fn outputs<'a>(&'a self) -> impl 'a + Iterator<Item = (egui::Pos2, egui::Vec2)> {
-        (0..self.output.count).filter_map(move |ix| self.output(ix))
+    /// Produces an iterator yielding the index, position, and normal for each output.
+    pub fn outputs(&self) -> impl Iterator<Item = (usize, egui::Pos2, egui::Vec2)> + '_ {
+        let norm = output_normal(self.flow);
+        self.outputs.iter().map(move |(&ix, &pos)| (ix, pos, norm))
+    }
+}
+
+fn input_normal(flow: egui::Direction) -> egui::Vec2 {
+    match flow {
+        egui::Direction::LeftToRight => egui::Vec2::new(-1.0, 0.0),
+        egui::Direction::RightToLeft => egui::Vec2::new(1.0, 0.0),
+        egui::Direction::TopDown => egui::Vec2::new(0.0, -1.0),
+        egui::Direction::BottomUp => egui::Vec2::new(0.0, 1.0),
+    }
+}
+
+fn output_normal(flow: egui::Direction) -> egui::Vec2 {
+    match flow {
+        egui::Direction::LeftToRight => egui::Vec2::new(1.0, 0.0),
+        egui::Direction::RightToLeft => egui::Vec2::new(-1.0, 0.0),
+        egui::Direction::TopDown => egui::Vec2::new(0.0, 1.0),
+        egui::Direction::BottomUp => egui::Vec2::new(0.0, -1.0),
     }
 }
 
@@ -769,7 +767,7 @@ fn find_closest_socket(
         };
 
         // Check inputs.
-        for (ix, (p, _)) in sockets.inputs().enumerate() {
+        for (ix, p, _) in sockets.inputs() {
             let dist_sq = pos_graph.distance_sq(p);
             if dist_sq < socket_radius_sq {
                 let socket = node::Socket {
@@ -786,7 +784,7 @@ fn find_closest_socket(
         }
 
         // Check outputs.
-        for (ix, (p, _)) in sockets.outputs().enumerate() {
+        for (ix, p, _) in sockets.outputs() {
             let dist_sq = pos_graph.distance_sq(p);
             if dist_sq < socket_radius_sq {
                 let socket = node::Socket {

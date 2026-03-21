@@ -69,8 +69,21 @@ impl<'a> Edge<'a> {
         } = self;
 
         // Retrieve the location and direction of the node sockets.
-        let a_out = ectx.output(ui, a, output).unwrap();
-        let b_in = ectx.input(ui, b, input).unwrap();
+        // If either socket position is unavailable (e.g. sparse explicit
+        // layout), skip rendering entirely.
+        let (a_out, b_in) = match (ectx.output(ui, a, output), ectx.input(ui, b, input)) {
+            (Some(a_out), Some(b_in)) => (a_out, b_in),
+            _ => {
+                let edge_id = ui.id().with(("edge", a, output, b, input));
+                let response = ui.interact(egui::Rect::NOTHING, edge_id, egui::Sense::click());
+                return EdgeResponse {
+                    response,
+                    changed: false,
+                    deleted: false,
+                    closest_point: egui::Pos2::ZERO,
+                };
+            }
+        };
 
         // TODO: Cache the curve and its points?
         let bezier = bezier::Cubic::from_edge_points(a_out, b_in);
