@@ -1,3 +1,4 @@
+use crate::socket::{SocketKind, SocketResponses};
 use crate::NodesCtx;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
@@ -44,36 +45,10 @@ pub struct Node {
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct NodeId(pub u64);
 
-/// Describes either an input or output.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SocketKind {
-    Input,
-    Output,
-}
-
-/// Uniquely identifies a socket.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct Socket {
-    /// The node that owns this socket.
-    pub node: NodeId,
-    /// Whether the socket is an input or output.
-    pub kind: SocketKind,
-    /// The index of the socket of this kind.
-    pub index: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct PositionedSocket {
-    pub socket: Socket,
-    /// Screen-space position of the socket.
-    pub pos: egui::Pos2,
-    /// The normal of the edge along which this socket resides.
-    pub normal: egui::Vec2,
-}
-
 /// An extension around the `egui::Response` that indicates node selection.
 pub struct NodeResponse<T> {
     response: egui::InnerResponse<T>,
+    sockets: SocketResponses,
     selection_changed: bool,
     selected: bool,
     removed: bool,
@@ -331,10 +306,18 @@ impl Node {
         let put_size = egui::Vec2::new(max_size.x, min_size.y);
         let put_rect = egui::Rect::from_min_size(pos_graph, put_size);
 
-        // Put the node's frame on a layer above the scene's UI layer.
         let scene_layer = ui.layer_id();
         let node_id = self.id;
         let egui_id = egui_id(ctx.graph_id, node_id);
+
+        // Socket layer below the frame so node content takes interaction precedence.
+        let socket_layer = egui::LayerId::new(scene_layer.order, egui_id.with("sockets"));
+        ui.ctx().set_sublayer(scene_layer, socket_layer);
+        if let Some(transform) = ui.ctx().layer_transform_to_global(scene_layer) {
+            ui.ctx().set_transform_layer(socket_layer, transform);
+        }
+
+        // Frame layer on top.
         let frame_layer = egui::LayerId::new(scene_layer.order, egui_id);
         ui.ctx().set_sublayer(scene_layer, frame_layer);
         if let Some(transform) = ui.ctx().layer_transform_to_global(scene_layer) {
@@ -475,69 +458,19 @@ impl Node {
         // Resolve the socket layout to concrete positions.
         let node_sockets = socket_layout.resolve(self.flow, response.rect, socket_padding);
 
-        // Store resolved sockets and paint them.
-        if !node_sockets.inputs.is_empty() || !node_sockets.outputs.is_empty() {
-            let gmem_arc = crate::memory(ui, ctx.graph_id);
-            let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
-            gmem.sockets.insert(self.id, node_sockets.clone());
-
-            // Check whether or not this node has a pressed socket.
-            let pressed_socket = gmem
-                .pressed
-                .as_ref()
-                .and_then(|pressed| match pressed.action {
-                    crate::PressAction::Socket(socket) if socket.node == self.id => {
-                        Some((socket.kind, socket.index))
-                    }
-                    _ => None,
-                });
-
-            // Check if the mouse is closest to one of this node's sockets.
-            let closest_socket = match gmem.closest_socket {
-                Some(closest) if closest.node == self.id => {
-                    // If there is a pressed socket, only highlight if this socket is of the
-                    // opposite kind.
-                    match gmem.pressed.as_ref().map(|p| &p.action) {
-                        Some(crate::PressAction::Socket(socket)) if closest.kind == socket.kind => {
-                            None
-                        }
-                        _ => Some((closest.kind, closest.index)),
-                    }
-                }
-                _ => None,
-            };
-
-            // Whether or not to paint the highlight.
-            let paint_highlight = |kind, ix| {
-                if let Some((k, i)) = pressed_socket {
-                    if k == kind && i == ix {
-                        return true;
-                    }
-                }
-                if let Some((k, i)) = closest_socket {
-                    if k == kind && i == ix {
-                        return true;
-                    }
-                }
-                false
-            };
-
-            let color = self.socket_color.unwrap_or(ui.visuals().text_color());
-            let hl_size = (self.socket_radius + 4.0).max(4.0);
-            let painter = ui.painter();
-            for (ix, pos, _) in node_sockets.inputs() {
-                if paint_highlight(SocketKind::Input, ix) {
-                    painter.circle_filled(pos, hl_size, color.linear_multiply(0.25));
-                }
-                painter.circle_filled(pos, self.socket_radius, color);
-            }
-            for (ix, pos, _) in node_sockets.outputs() {
-                if paint_highlight(SocketKind::Output, ix) {
-                    painter.circle_filled(pos, hl_size, color.linear_multiply(0.25));
-                }
-                painter.circle_filled(pos, self.socket_radius, color);
-            }
-        }
+        // Paint and interact with all sockets.
+        let socket_color = self.socket_color.unwrap_or(ui.visuals().text_color());
+        let socket_responses = crate::socket::show(
+            ui,
+            ctx.graph_id,
+            self.id,
+            egui_id,
+            socket_layer,
+            response.rect,
+            &node_sockets,
+            socket_color,
+            self.socket_radius,
+        );
 
         // If the delete or backspace key was pressed and the node is selected, remove it.
         // Skip when immutable.
@@ -569,6 +502,7 @@ impl Node {
 
         NodeResponse {
             response: egui::InnerResponse::new(content_output, response),
+            sockets: socket_responses,
             selection_changed,
             selected,
             removed,
@@ -643,6 +577,11 @@ impl<R> NodeResponse<R> {
     /// Whether or not any events occurred related to the creation of an edge.
     pub fn edge_event(&self) -> Option<EdgeEvent> {
         self.edge_event
+    }
+
+    /// The collected [`egui::Response`]s for each socket on this node.
+    pub fn sockets(&self) -> &SocketResponses {
+        &self.sockets
     }
 }
 

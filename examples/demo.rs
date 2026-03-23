@@ -1,5 +1,6 @@
 use eframe::egui;
-use egui_graph::node::{EdgeEvent, SocketKind};
+use egui_graph::node::EdgeEvent;
+use egui_graph::SocketKind;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, HashSet};
@@ -310,6 +311,14 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
                     }
                 })
             });
+
+        // Demonstrate socket tooltips.
+        for (ix, r) in response.sockets().inputs() {
+            r.clone().on_hover_text(format!("Input {ix}"));
+        }
+        for (ix, r) in response.sockets().outputs() {
+            r.clone().on_hover_text(format!("Output {ix}"));
+        }
 
         if response.changed() {
             // Check for an edge event.
