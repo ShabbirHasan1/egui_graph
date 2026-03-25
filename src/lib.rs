@@ -119,7 +119,15 @@ struct PressedNode {
 pub struct View {
     /// The visible area of the graph's [`Scene`][egui::containers::Scene].
     pub scene_rect: egui::Rect,
+    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_sorted_layout"))]
     pub layout: Layout,
+}
+
+#[cfg(feature = "serde")]
+fn serialize_sorted_layout<S: serde::Serializer>(layout: &Layout, s: S) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    let sorted: BTreeMap<_, _> = layout.iter().collect();
+    sorted.serialize(s)
 }
 
 /// The location of the top-left of each node relative to the centre of the graph area.
