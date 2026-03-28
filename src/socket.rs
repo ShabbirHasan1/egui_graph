@@ -60,11 +60,53 @@ impl SocketResponses {
     }
 }
 
+/// Adaptive segment count for a semicircle, matching egui's circle tessellation
+/// heuristic (halved, since a semicircle spans half the arc).
+fn semicircle_segments(radius: f32) -> usize {
+    if radius <= 2.0 {
+        4
+    } else if radius <= 5.0 {
+        8
+    } else if radius < 18.0 {
+        16
+    } else if radius < 50.0 {
+        32
+    } else {
+        64
+    }
+}
+
+/// Paint a filled semicircle facing outward along `normal`.
+///
+/// The flat edge is perpendicular to `normal` and passes through `center`.
+/// The curved part extends outward from `center` by `radius` along `normal`.
+fn paint_semicircle(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    normal: egui::Vec2,
+    color: egui::Color32,
+) {
+    let segments = semicircle_segments(radius);
+    let perp = egui::Vec2::new(-normal.y, normal.x);
+    let mut pts = Vec::with_capacity(segments + 1);
+    for i in 0..=segments {
+        let angle = std::f32::consts::PI * (i as f32) / (segments as f32);
+        let (sin, cos) = angle.sin_cos();
+        // Trace from +perp through +normal to -perp.
+        pts.push(center + perp * (radius * cos) + normal * (radius * sin));
+    }
+    painter.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
+}
+
 /// Paint and interact with all sockets for a node.
 ///
 /// Phase A: extracts highlight state (pressed/closest socket) from graph memory, then drops the lock.
-/// Phase B: creates a socket sublayer, paints each socket circle (with highlight), and calls
-/// `ui.interact()` to produce per-socket responses.
+/// Phase B: creates a socket sublayer, paints each socket as an outward-facing semicircle
+/// (using `Shape::convex_polygon`), and calls `ui.interact()` to produce per-socket responses.
+///
+/// By rendering semicircles that only extend outward from the frame border, sockets avoid
+/// visual overlap with node frames regardless of sublayer ordering.
 pub(crate) fn show(
     ui: &mut egui::Ui,
     graph_id: egui::Id,
@@ -140,20 +182,32 @@ pub(crate) fn show(
 
     ui.scope_builder(builder, |ui| {
         let painter = ui.painter();
-        for (ix, pos, _) in node_sockets.inputs() {
+        for (ix, pos, normal) in node_sockets.inputs() {
             if paint_highlight(SocketKind::Input, ix) {
-                painter.circle_filled(pos, hl_size, socket_color.linear_multiply(0.25));
+                paint_semicircle(
+                    painter,
+                    pos,
+                    hl_size,
+                    normal,
+                    socket_color.linear_multiply(0.25),
+                );
             }
-            painter.circle_filled(pos, socket_radius, socket_color);
+            paint_semicircle(painter, pos, socket_radius, normal, socket_color);
             let id = egui_id.with("in").with(ix);
             let rect = egui::Rect::from_center_size(pos, egui::Vec2::splat(interact_diameter));
             input_responses.insert(ix, ui.interact(rect, id, egui::Sense::hover()));
         }
-        for (ix, pos, _) in node_sockets.outputs() {
+        for (ix, pos, normal) in node_sockets.outputs() {
             if paint_highlight(SocketKind::Output, ix) {
-                painter.circle_filled(pos, hl_size, socket_color.linear_multiply(0.25));
+                paint_semicircle(
+                    painter,
+                    pos,
+                    hl_size,
+                    normal,
+                    socket_color.linear_multiply(0.25),
+                );
             }
-            painter.circle_filled(pos, socket_radius, socket_color);
+            paint_semicircle(painter, pos, socket_radius, normal, socket_color);
             let id = egui_id.with("out").with(ix);
             let rect = egui::Rect::from_center_size(pos, egui::Vec2::splat(interact_diameter));
             output_responses.insert(ix, ui.interact(rect, id, egui::Sense::hover()));
