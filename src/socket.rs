@@ -60,16 +60,34 @@ impl SocketResponses {
     }
 }
 
-/// Build points for a semicircle facing outward along `normal`.
+/// Adaptive segment count for a semicircle, matching egui's circle tessellation
+/// heuristic (halved, since a semicircle spans half the arc).
+fn semicircle_segments(radius: f32) -> usize {
+    if radius <= 2.0 {
+        4
+    } else if radius <= 5.0 {
+        8
+    } else if radius < 18.0 {
+        16
+    } else if radius < 50.0 {
+        32
+    } else {
+        64
+    }
+}
+
+/// Paint a filled semicircle facing outward along `normal`.
 ///
 /// The flat edge is perpendicular to `normal` and passes through `center`.
 /// The curved part extends outward from `center` by `radius` along `normal`.
-fn semicircle_points(
+fn paint_semicircle(
+    painter: &egui::Painter,
     center: egui::Pos2,
     radius: f32,
     normal: egui::Vec2,
-    segments: usize,
-) -> Vec<egui::Pos2> {
+    color: egui::Color32,
+) {
+    let segments = semicircle_segments(radius);
     let perp = egui::Vec2::new(-normal.y, normal.x);
     let mut pts = Vec::with_capacity(segments + 1);
     for i in 0..=segments {
@@ -78,7 +96,7 @@ fn semicircle_points(
         // Trace from +perp through +normal to -perp.
         pts.push(center + perp * (radius * cos) + normal * (radius * sin));
     }
-    pts
+    painter.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
 }
 
 /// Paint and interact with all sockets for a node.
@@ -162,44 +180,34 @@ pub(crate) fn show(
     let mut input_responses = std::collections::BTreeMap::new();
     let mut output_responses = std::collections::BTreeMap::new();
 
-    let segments = 16;
-
     ui.scope_builder(builder, |ui| {
         let painter = ui.painter();
         for (ix, pos, normal) in node_sockets.inputs() {
             if paint_highlight(SocketKind::Input, ix) {
-                let pts = semicircle_points(pos, hl_size, normal, segments);
-                painter.add(egui::Shape::convex_polygon(
-                    pts,
+                paint_semicircle(
+                    painter,
+                    pos,
+                    hl_size,
+                    normal,
                     socket_color.linear_multiply(0.25),
-                    egui::Stroke::NONE,
-                ));
+                );
             }
-            let pts = semicircle_points(pos, socket_radius, normal, segments);
-            painter.add(egui::Shape::convex_polygon(
-                pts,
-                socket_color,
-                egui::Stroke::NONE,
-            ));
+            paint_semicircle(painter, pos, socket_radius, normal, socket_color);
             let id = egui_id.with("in").with(ix);
             let rect = egui::Rect::from_center_size(pos, egui::Vec2::splat(interact_diameter));
             input_responses.insert(ix, ui.interact(rect, id, egui::Sense::hover()));
         }
         for (ix, pos, normal) in node_sockets.outputs() {
             if paint_highlight(SocketKind::Output, ix) {
-                let pts = semicircle_points(pos, hl_size, normal, segments);
-                painter.add(egui::Shape::convex_polygon(
-                    pts,
+                paint_semicircle(
+                    painter,
+                    pos,
+                    hl_size,
+                    normal,
                     socket_color.linear_multiply(0.25),
-                    egui::Stroke::NONE,
-                ));
+                );
             }
-            let pts = semicircle_points(pos, socket_radius, normal, segments);
-            painter.add(egui::Shape::convex_polygon(
-                pts,
-                socket_color,
-                egui::Stroke::NONE,
-            ));
+            paint_semicircle(painter, pos, socket_radius, normal, socket_color);
             let id = egui_id.with("out").with(ix);
             let rect = egui::Rect::from_center_size(pos, egui::Vec2::splat(interact_diameter));
             output_responses.insert(ix, ui.interact(rect, id, egui::Sense::hover()));
