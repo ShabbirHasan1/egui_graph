@@ -14,6 +14,7 @@ use std::ops;
 pub struct Edge<'a> {
     edge: ((NodeId, OutputIx), (NodeId, InputIx)),
     distance_per_point: f32,
+    curvature: f32,
     selected: &'a mut bool,
 }
 
@@ -43,6 +44,7 @@ impl<'a> Edge<'a> {
         Self {
             edge: (a, b),
             distance_per_point: Self::DEFAULT_DISTANCE_PER_POINT,
+            curvature: bezier::Cubic::DEFAULT_CURVATURE,
             selected,
         }
     }
@@ -60,11 +62,24 @@ impl<'a> Edge<'a> {
         self
     }
 
+    /// Set the normalized curvature used when constructing the edge bezier.
+    ///
+    /// Values are clamped to `0.0..=1.0` and then scaled internally so the
+    /// strongest curve uses at most half the socket-to-socket distance for its
+    /// control points.
+    ///
+    /// Default: [`bezier::Cubic::DEFAULT_CURVATURE`].
+    pub fn curvature_factor(mut self, curvature: f32) -> Self {
+        self.curvature = curvature;
+        self
+    }
+
     /// Process any user interaction with the edge and present it.
     pub fn show(self, ectx: &mut EdgesCtx, ui: &mut egui::Ui) -> EdgeResponse {
         let Self {
             edge: ((a, output), (b, input)),
             distance_per_point,
+            curvature,
             selected,
         } = self;
 
@@ -86,7 +101,7 @@ impl<'a> Edge<'a> {
         };
 
         // TODO: Cache the curve and its points?
-        let bezier = bezier::Cubic::from_edge_points(a_out, b_in);
+        let bezier = bezier::Cubic::from_edge_points(a_out, b_in, curvature);
 
         // Get the mouse position for computing the closest point on the edge.
         let ui_response = ui.response();
@@ -128,10 +143,9 @@ impl<'a> Edge<'a> {
             {
                 *selected = false;
             }
-        } else if clicked {
-            *selected = true;
-        } else if under_selection_rect
-            && ui.input(|i| i.modifiers.shift && i.pointer.primary_released())
+        } else if clicked
+            || (under_selection_rect
+                && ui.input(|i| i.modifiers.shift && i.pointer.primary_released()))
         {
             *selected = true;
         }
@@ -157,9 +171,7 @@ impl<'a> Edge<'a> {
         let pts: Vec<_> = bezier.flatten(distance_per_point).collect();
         let stroke = if *selected {
             ui.style().visuals.selection.stroke
-        } else if show_hover {
-            ui.style().visuals.widgets.hovered.fg_stroke
-        } else if under_selection_rect && ui.input(|i| i.modifiers.shift) {
+        } else if show_hover || (under_selection_rect && ui.input(|i| i.modifiers.shift)) {
             ui.style().visuals.widgets.hovered.fg_stroke
         } else {
             ui.style().visuals.widgets.noninteractive.fg_stroke

@@ -107,6 +107,7 @@ fn paint_semicircle(
 ///
 /// By rendering semicircles that only extend outward from the frame border, sockets avoid
 /// visual overlap with node frames regardless of sublayer ordering.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn show(
     ui: &mut egui::Ui,
     graph_id: egui::Id,

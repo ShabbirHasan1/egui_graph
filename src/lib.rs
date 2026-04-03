@@ -315,7 +315,7 @@ impl Graph {
 
         // Create the Scene.
         let mut scene = egui::containers::Scene::new()
-            .zoom_range(self.zoom_range.clone())
+            .zoom_range(self.zoom_range)
             .drag_pan_buttons(egui::containers::DragPanButtons::MIDDLE);
         if let Some(max_inner_size) = self.max_inner_size {
             scene = scene.max_inner_size(max_inner_size);
@@ -549,8 +549,8 @@ impl<'a> Show<'a> {
                 selection_rect,
                 select,
                 socket_press_released,
-                visited: &mut *visited,
-                layout: &mut *layout,
+                visited,
+                layout,
                 immutable,
             };
             content(&mut ctx, ui);
@@ -706,7 +706,11 @@ pub struct EdgeInProgress {
 }
 
 impl EdgeInProgress {
-    pub fn bezier_cubic(&self) -> bezier::Cubic {
+    /// Construct the bezier curve for this in-progress edge.
+    ///
+    /// `curvature` is a normalized `0.0..=1.0` value controlling how
+    /// pronounced the curve is. See [`bezier::Cubic::DEFAULT_CURVATURE`].
+    pub fn bezier_cubic(&self, curvature: f32) -> bezier::Cubic {
         let start = (self.start.pos, self.start.normal);
         let end_normal = self
             .end_socket
@@ -714,7 +718,7 @@ impl EdgeInProgress {
             .map(|&(_, n)| n)
             .unwrap_or(-self.start.normal);
         let end = (self.end_pos, end_normal);
-        bezier::Cubic::from_edge_points(start, end)
+        bezier::Cubic::from_edge_points(start, end, curvature)
     }
 
     /// Short-hand for painting the in-progress edge with some reasonable defaults.
@@ -722,9 +726,9 @@ impl EdgeInProgress {
     /// If you require custom styling of the in-progress edge, use
     /// [`EdgeInProgress::bezier_cubic`] or the individual fields to paint it
     /// however you wish.
-    pub fn show(&self, ui: &egui::Ui) {
+    pub fn show(&self, ui: &egui::Ui, curvature: f32) {
         let dist_per_pt = crate::edge::Edge::DEFAULT_DISTANCE_PER_POINT;
-        let bezier = self.bezier_cubic();
+        let bezier = self.bezier_cubic(curvature);
         let pts = bezier.flatten(dist_per_pt).collect();
         let stroke = ui.visuals().widgets.active.fg_stroke;
         ui.painter().add(egui::Shape::line(pts, stroke));
@@ -958,7 +962,7 @@ pub fn with_graph_memory<R>(
             .clone()
     });
     let gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
-    f(&*gmem)
+    f(&gmem)
 }
 
 /// Checks if a node with the given ID is currently selected in the specified graph.
