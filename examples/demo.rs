@@ -26,8 +26,8 @@ struct State {
     custom_edge_style: bool,
     edge_width: f32,
     edge_color: egui::Color32,
-    #[cfg(feature = "layout")]
     edge_curvature: f32,
+    #[cfg(feature = "layout")]
     auto_layout: bool,
     node_spacing: [f32; 2],
     node_id_map: HashMap<egui_graph::NodeId, NodeIndex>,
@@ -424,10 +424,6 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                 ui.label("Flow:");
                 ui.radio_value(&mut state.flow, egui::Direction::LeftToRight, "Right");
                 ui.radio_value(&mut state.flow, egui::Direction::TopDown, "Down");
-            });
-            ui.horizontal(|ui| {
-                ui.label("Edge curvature:");
-                ui.add(egui::Slider::new(&mut state.edge_curvature, 0.0..=1.0));
             });
             ui.horizontal(|ui| {
                 ui.label("Edge curvature:");

@@ -706,6 +706,10 @@ pub struct EdgeInProgress {
 }
 
 impl EdgeInProgress {
+    /// Construct the bezier curve for this in-progress edge.
+    ///
+    /// `curvature` is a normalized `0.0..=1.0` value controlling how
+    /// pronounced the curve is. See [`bezier::Cubic::DEFAULT_CURVATURE`].
     pub fn bezier_cubic(&self, curvature: f32) -> bezier::Cubic {
         let start = (self.start.pos, self.start.normal);
         let end_normal = self
@@ -714,7 +718,7 @@ impl EdgeInProgress {
             .map(|&(_, n)| n)
             .unwrap_or(-self.start.normal);
         let end = (self.end_pos, end_normal);
-        bezier::Cubic::from_edge_points_with_curvature(start, end, curvature)
+        bezier::Cubic::from_edge_points(start, end, curvature)
     }
 
     /// Short-hand for painting the in-progress edge with some reasonable defaults.

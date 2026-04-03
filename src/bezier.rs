@@ -16,18 +16,11 @@ impl Cubic {
     /// Construct a cubic curve from the start and end points (and normals) of an edge.
     ///
     /// The normals of the associated input/output are required in order to determine ctrl points.
-    pub fn from_edge_points(a: (egui::Pos2, egui::Vec2), b: (egui::Pos2, egui::Vec2)) -> Self {
-        Self::from_edge_points_with_curvature(a, b, Self::DEFAULT_CURVATURE)
-    }
-
-    /// Construct a cubic curve using a custom curvature factor.
     ///
     /// `curvature` is a normalized value in the range `0.0..=1.0`.
-    ///
-    /// Internally this maps to a control-point distance factor in the range
-    /// `0.0..=Self::MAX_CURVATURE_FACTOR`, capping the strongest curve at half
-    /// of the total socket-to-socket distance.
-    pub fn from_edge_points_with_curvature(
+    /// Internally this maps to a control-point distance factor capping the
+    /// strongest curve at half of the total socket-to-socket distance.
+    pub fn from_edge_points(
         a: (egui::Pos2, egui::Vec2),
         b: (egui::Pos2, egui::Vec2),
         curvature: f32,

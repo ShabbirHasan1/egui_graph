@@ -101,7 +101,7 @@ impl<'a> Edge<'a> {
         };
 
         // TODO: Cache the curve and its points?
-        let bezier = bezier::Cubic::from_edge_points_with_curvature(a_out, b_in, curvature);
+        let bezier = bezier::Cubic::from_edge_points(a_out, b_in, curvature);
 
         // Get the mouse position for computing the closest point on the edge.
         let ui_response = ui.response();
