@@ -29,6 +29,7 @@ pub struct Node {
     id: NodeId,
     inputs: usize,
     outputs: usize,
+    collapsed: bool,
     flow: egui::Direction,
     socket_radius: f32,
     socket_color: Option<egui::Color32>,
@@ -107,6 +108,7 @@ impl Node {
             socket_color: None,
             inputs: 0,
             outputs: 0,
+            collapsed: false,
             flow: egui::Direction::LeftToRight,
             socket_radius: 3.0,
             animation_time: 0.1,
@@ -128,6 +130,12 @@ impl Node {
 
     pub fn outputs(mut self, n: usize) -> Self {
         self.outputs = n;
+        self
+    }
+
+    /// Allow the node to shrink below the usual socket-spacing-driven minimum size.
+    pub fn collapsed(mut self, collapsed: bool) -> Self {
+        self.collapsed = collapsed;
         self
     }
 
@@ -247,7 +255,7 @@ impl Node {
         let win_corner_radius = ui.visuals().window_corner_radius.ne as f32;
         let socket_padding = win_corner_radius + min_interact_len * 0.5;
         let min_len = (max_sockets.max(1) - 1) as f32 * min_socket_gap + socket_padding * 2.0;
-        if max_sockets > 1 {
+        if max_sockets > 1 && !self.collapsed {
             match self.flow {
                 egui::Direction::LeftToRight | egui::Direction::RightToLeft => {
                     min_size.y = min_size.y.max(min_len);

@@ -27,6 +27,7 @@ struct State {
     edge_width: f32,
     edge_color: egui::Color32,
     #[cfg(feature = "layout")]
+    edge_curvature: f32,
     auto_layout: bool,
     node_spacing: [f32; 2],
     node_id_map: HashMap<egui_graph::NodeId, NodeIndex>,
@@ -80,6 +81,7 @@ impl App {
             custom_edge_style: false,
             edge_width: 1.0,
             edge_color: ctx.style().visuals.weak_text_color(),
+            edge_curvature: 0.5,
             flow: egui::Direction::TopDown,
             #[cfg(feature = "layout")]
             auto_layout: true,
@@ -367,8 +369,9 @@ fn edges(ectx: &mut egui_graph::EdgesCtx, ui: &mut egui::Ui, state: &mut State) 
         let a = egui_graph::NodeId::from_u64(na.index() as u64);
         let b = egui_graph::NodeId::from_u64(nb.index() as u64);
         let mut selected = state.interaction.selection.edges.contains(&e);
-        let response =
-            egui_graph::edge::Edge::new((a, output), (b, input), &mut selected).show(ectx, ui);
+        let response = egui_graph::edge::Edge::new((a, output), (b, input), &mut selected)
+            .curvature_factor(state.edge_curvature)
+            .show(ectx, ui);
 
         if response.deleted() {
             state.graph.remove_edge(e);
@@ -384,7 +387,11 @@ fn edges(ectx: &mut egui_graph::EdgesCtx, ui: &mut egui::Ui, state: &mut State) 
 
     // Draw the in-progress edge if there is one.
     if let Some(edge) = ectx.in_progress(ui) {
-        edge.show(ui);
+        let dist_per_pt = egui_graph::edge::Edge::DEFAULT_DISTANCE_PER_POINT;
+        let bezier = edge.bezier_cubic_with_curvature(state.edge_curvature);
+        let pts = bezier.flatten(dist_per_pt).collect();
+        let stroke = ui.visuals().widgets.active.fg_stroke;
+        ui.painter().add(egui::Shape::line(pts, stroke));
     }
 }
 
@@ -421,6 +428,14 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                 ui.label("Flow:");
                 ui.radio_value(&mut state.flow, egui::Direction::LeftToRight, "Right");
                 ui.radio_value(&mut state.flow, egui::Direction::TopDown, "Down");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Edge curvature:");
+                ui.add(egui::Slider::new(&mut state.edge_curvature, 0.0..=1.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Edge curvature:");
+                ui.add(egui::Slider::new(&mut state.edge_curvature, 0.0..=1.0));
             });
             ui.horizontal(|ui| {
                 ui.label("Node spacing X:");

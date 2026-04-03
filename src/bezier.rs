@@ -8,16 +8,37 @@ pub struct Cubic {
 }
 
 impl Cubic {
+    /// Maximum proportion of the socket-to-socket distance used for control points.
+    pub const MAX_CURVATURE_FACTOR: f32 = 0.5;
+    /// Default normalized curvature value.
+    pub const DEFAULT_CURVATURE: f32 = 0.5;
+
     /// Construct a cubic curve from the start and end points (and normals) of an edge.
     ///
     /// The normals of the associated input/output are required in order to determine ctrl points.
     pub fn from_edge_points(a: (egui::Pos2, egui::Vec2), b: (egui::Pos2, egui::Vec2)) -> Self {
+        Self::from_edge_points_with_curvature(a, b, Self::DEFAULT_CURVATURE)
+    }
+
+    /// Construct a cubic curve using a custom curvature factor.
+    ///
+    /// `curvature` is a normalized value in the range `0.0..=1.0`.
+    ///
+    /// Internally this maps to a control-point distance factor in the range
+    /// `0.0..=Self::MAX_CURVATURE_FACTOR`, capping the strongest curve at half
+    /// of the total socket-to-socket distance.
+    pub fn from_edge_points_with_curvature(
+        a: (egui::Pos2, egui::Vec2),
+        b: (egui::Pos2, egui::Vec2),
+        curvature: f32,
+    ) -> Self {
         let (from, a_norm) = a;
         let (to, b_norm) = b;
         let distance = from.distance(to);
-        let half_distance = distance * 0.5;
-        let ctrl1 = from + a_norm * half_distance;
-        let ctrl2 = to + b_norm * half_distance;
+        let curvature_factor = curvature.clamp(0.0, 1.0) * Self::MAX_CURVATURE_FACTOR;
+        let ctrl_distance = distance * curvature_factor;
+        let ctrl1 = from + a_norm * ctrl_distance;
+        let ctrl2 = to + b_norm * ctrl_distance;
         Self {
             from,
             ctrl1,
