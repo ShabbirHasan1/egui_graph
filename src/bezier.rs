@@ -9,7 +9,7 @@ pub struct Cubic {
 
 impl Cubic {
     /// Maximum proportion of the socket-to-socket distance used for control points.
-    pub const MAX_CURVATURE_FACTOR: f32 = 0.5;
+    pub(crate) const MAX_CURVATURE_FACTOR: f32 = 0.5;
     /// Default normalized curvature value.
     pub const DEFAULT_CURVATURE: f32 = 0.5;
 

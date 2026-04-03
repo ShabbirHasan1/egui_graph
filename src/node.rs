@@ -95,6 +95,8 @@ pub struct NodeCtx<'a> {
 }
 
 impl Node {
+    const COLLAPSED_SOCKET_GAP_FACTOR: f32 = 0.25;
+
     /// Begin instantiating a new node widget.
     pub fn new(id_src: impl Hash) -> Self {
         Self::from_id(NodeId::new(id_src))
@@ -133,7 +135,11 @@ impl Node {
         self
     }
 
-    /// Allow the node to shrink below the usual socket-spacing-driven minimum size.
+    /// Allow the node to shrink below the usual socket-spacing-driven minimum size
+    /// when there are two or more sockets.
+    ///
+    /// Collapsed nodes still preserve a small amount of socket separation so
+    /// multiple sockets do not fully overlap.
     pub fn collapsed(mut self, collapsed: bool) -> Self {
         self.collapsed = collapsed;
         self
@@ -254,8 +260,14 @@ impl Node {
         let min_socket_gap = min_interact_len + min_item_spacing;
         let win_corner_radius = ui.visuals().window_corner_radius.ne as f32;
         let socket_padding = win_corner_radius + min_interact_len * 0.5;
-        let min_len = (max_sockets.max(1) - 1) as f32 * min_socket_gap + socket_padding * 2.0;
-        if max_sockets > 1 && !self.collapsed {
+        if max_sockets > 1 {
+            let socket_gap_factor = if self.collapsed {
+                Self::COLLAPSED_SOCKET_GAP_FACTOR
+            } else {
+                1.0
+            };
+            let min_len = (max_sockets - 1) as f32 * min_socket_gap * socket_gap_factor
+                + socket_padding * 2.0;
             match self.flow {
                 egui::Direction::LeftToRight | egui::Direction::RightToLeft => {
                     min_size.y = min_size.y.max(min_len);

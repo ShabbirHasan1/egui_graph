@@ -706,11 +706,7 @@ pub struct EdgeInProgress {
 }
 
 impl EdgeInProgress {
-    pub fn bezier_cubic(&self) -> bezier::Cubic {
-        self.bezier_cubic_with_curvature(bezier::Cubic::DEFAULT_CURVATURE)
-    }
-
-    pub fn bezier_cubic_with_curvature(&self, curvature: f32) -> bezier::Cubic {
+    pub fn bezier_cubic(&self, curvature: f32) -> bezier::Cubic {
         let start = (self.start.pos, self.start.normal);
         let end_normal = self
             .end_socket
@@ -726,9 +722,9 @@ impl EdgeInProgress {
     /// If you require custom styling of the in-progress edge, use
     /// [`EdgeInProgress::bezier_cubic`] or the individual fields to paint it
     /// however you wish.
-    pub fn show(&self, ui: &egui::Ui) {
+    pub fn show(&self, ui: &egui::Ui, curvature: f32) {
         let dist_per_pt = crate::edge::Edge::DEFAULT_DISTANCE_PER_POINT;
-        let bezier = self.bezier_cubic();
+        let bezier = self.bezier_cubic(curvature);
         let pts = bezier.flatten(dist_per_pt).collect();
         let stroke = ui.visuals().widgets.active.fg_stroke;
         ui.painter().add(egui::Shape::line(pts, stroke));

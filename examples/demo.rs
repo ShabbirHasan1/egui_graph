@@ -387,11 +387,7 @@ fn edges(ectx: &mut egui_graph::EdgesCtx, ui: &mut egui::Ui, state: &mut State) 
 
     // Draw the in-progress edge if there is one.
     if let Some(edge) = ectx.in_progress(ui) {
-        let dist_per_pt = egui_graph::edge::Edge::DEFAULT_DISTANCE_PER_POINT;
-        let bezier = edge.bezier_cubic_with_curvature(state.edge_curvature);
-        let pts = bezier.flatten(dist_per_pt).collect();
-        let stroke = ui.visuals().widgets.active.fg_stroke;
-        ui.painter().add(egui::Shape::line(pts, stroke));
+        edge.show(ui, state.edge_curvature);
     }
 }
 
