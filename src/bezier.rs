@@ -81,7 +81,7 @@ impl Cubic {
     /// simple edge selection (the main use-case for this method).
     pub fn closest_point(self, distance_per_point: f32, target: egui::Pos2) -> egui::Pos2 {
         self.flatten(distance_per_point)
-            .fold((self.from, std::f32::MAX), |closest, p| {
+            .fold((self.from, f32::MAX), |closest, p| {
                 let dist_sq = p.distance_sq(target);
                 if dist_sq < closest.1 {
                     (p, dist_sq)

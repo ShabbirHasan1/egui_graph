@@ -143,10 +143,9 @@ impl<'a> Edge<'a> {
             {
                 *selected = false;
             }
-        } else if clicked {
-            *selected = true;
-        } else if under_selection_rect
-            && ui.input(|i| i.modifiers.shift && i.pointer.primary_released())
+        } else if clicked
+            || (under_selection_rect
+                && ui.input(|i| i.modifiers.shift && i.pointer.primary_released()))
         {
             *selected = true;
         }
@@ -172,9 +171,7 @@ impl<'a> Edge<'a> {
         let pts: Vec<_> = bezier.flatten(distance_per_point).collect();
         let stroke = if *selected {
             ui.style().visuals.selection.stroke
-        } else if show_hover {
-            ui.style().visuals.widgets.hovered.fg_stroke
-        } else if under_selection_rect && ui.input(|i| i.modifiers.shift) {
+        } else if show_hover || (under_selection_rect && ui.input(|i| i.modifiers.shift)) {
             ui.style().visuals.widgets.hovered.fg_stroke
         } else {
             ui.style().visuals.widgets.noninteractive.fg_stroke

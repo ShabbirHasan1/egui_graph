@@ -315,7 +315,7 @@ impl Graph {
 
         // Create the Scene.
         let mut scene = egui::containers::Scene::new()
-            .zoom_range(self.zoom_range.clone())
+            .zoom_range(self.zoom_range)
             .drag_pan_buttons(egui::containers::DragPanButtons::MIDDLE);
         if let Some(max_inner_size) = self.max_inner_size {
             scene = scene.max_inner_size(max_inner_size);
@@ -549,8 +549,8 @@ impl<'a> Show<'a> {
                 selection_rect,
                 select,
                 socket_press_released,
-                visited: &mut *visited,
-                layout: &mut *layout,
+                visited,
+                layout,
                 immutable,
             };
             content(&mut ctx, ui);
@@ -962,7 +962,7 @@ pub fn with_graph_memory<R>(
             .clone()
     });
     let gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
-    f(&*gmem)
+    f(&gmem)
 }
 
 /// Checks if a node with the given ID is currently selected in the specified graph.
