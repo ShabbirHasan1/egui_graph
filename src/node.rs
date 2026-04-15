@@ -494,7 +494,7 @@ impl Node {
         // Skip when immutable.
         let removed = if !immutable
             && selected
-            && !ui.ctx().wants_keyboard_input()
+            && !ui.ctx().egui_wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Delete) | i.key_pressed(egui::Key::Backspace))
         {
             // Remove ourselves from the selection.
