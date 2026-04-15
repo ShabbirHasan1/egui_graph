@@ -72,15 +72,16 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = &cc.egui_ctx;
         ctx.set_fonts(egui::FontDefinitions::default());
+        let weak_text_color = ctx.global_style().visuals.weak_text_color();
         let graph = new_graph();
         let state = State {
             graph,
             interaction: Default::default(),
-            socket_color: ctx.style().visuals.weak_text_color(),
+            socket_color: weak_text_color,
             socket_radius: 3.0,
             custom_edge_style: false,
             edge_width: 1.0,
-            edge_color: ctx.style().visuals.weak_text_color(),
+            edge_color: weak_text_color,
             edge_curvature: 0.5,
             flow: egui::Direction::TopDown,
             #[cfg(feature = "layout")]
@@ -97,17 +98,17 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(feature = "layout")]
         if self.state.auto_layout {
             self.view.layout = layout(
                 &self.state.graph,
                 self.state.flow,
                 self.state.node_spacing,
-                ctx,
+                ui.ctx(),
             );
         }
-        gui(ctx, &mut self.view, &mut self.state);
+        gui(ui, &mut self.view, &mut self.state);
     }
 }
 
@@ -189,10 +190,10 @@ fn layout(
     layout
 }
 
-fn gui(ctx: &egui::Context, view: &mut egui_graph::View, state: &mut State) {
+fn gui(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
     egui::containers::CentralPanel::default()
         .frame(egui::Frame::default())
-        .show(ctx, |ui| {
+        .show_inside(ui, |ui| {
             graph_config(ui, view, state);
             graph(ui, view, state);
         });
