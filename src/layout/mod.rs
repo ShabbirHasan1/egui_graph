@@ -11,10 +11,13 @@ use crate::edge::{InputIx, OutputIx};
 use crate::{Layout, NodeId};
 use std::collections::{BTreeMap, HashMap};
 
+pub use route::route_edges;
+
 mod acyclic;
 mod order;
 mod place;
 mod rank;
+mod route;
 
 /// Per-node input to [`layout`]: the node's size and the layout of its
 /// sockets.
@@ -39,14 +42,14 @@ pub struct LayoutParams {
     pub component_gap: f32,
 }
 
-/// Corridor waypoints for edges, produced by [`layout_routed`].
+/// Corridor waypoints for edges, produced by [`layout_routed`] or
+/// [`route_edges`].
 ///
-/// A route exists only for an edge that spans multiple layers *and* whose
-/// direct socket-to-socket curve could overlap a node; all other edges look
-/// best as plain curves.
+/// A route exists only for an edge whose direct socket-to-socket curve could
+/// overlap a node; all other edges look best as plain curves.
 ///
-/// Routes are tied to the [`Layout`] they were produced with: once nodes
-/// move away from it (e.g. dragged by the user), discard them rather than
+/// Routes are tied to the node positions they were produced against: once
+/// nodes move away from them, recompute (or discard) the routes rather than
 /// threading edges through outdated corridors.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EdgeRoutes {

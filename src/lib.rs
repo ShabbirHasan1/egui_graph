@@ -3,7 +3,9 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "layout")]
-pub use layout::{layout, layout_from_sizes, layout_routed, EdgeRoutes, LayoutNode, LayoutParams};
+pub use layout::{
+    layout, layout_from_sizes, layout_routed, route_edges, EdgeRoutes, LayoutNode, LayoutParams,
+};
 pub use node::{FramedResponse, NodeCtx, NodeId, NodeInteraction};
 pub use socket::layout::{grid::SocketGrid, SocketLayout};
 pub use socket::{socket_padding, SocketKind, SocketResponses};
