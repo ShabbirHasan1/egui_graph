@@ -29,6 +29,10 @@ struct State {
     edge_curvature: f32,
     #[cfg(feature = "layout")]
     auto_layout: bool,
+    /// Whether the layout accounts for the socket each edge connects to;
+    /// when off it behaves like a classic node-size-only layered layout.
+    #[cfg(feature = "layout")]
+    socket_aware: bool,
     /// Whether edges route around nodes (via the auto-layout's corridors, or
     /// best-effort against the current positions in freehand mode).
     #[cfg(feature = "layout")]
@@ -97,6 +101,8 @@ impl App {
             #[cfg(feature = "layout")]
             auto_layout: true,
             #[cfg(feature = "layout")]
+            socket_aware: true,
+            #[cfg(feature = "layout")]
             route_edges: true,
             #[cfg(feature = "layout")]
             layer_gap: egui_graph::LayoutParams::DEFAULT_LAYER_GAP,
@@ -118,13 +124,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(feature = "layout")]
         if self.state.auto_layout {
-            (self.view.layout, self.state.routes) = layout(
-                &self.state.graph,
-                self.state.flow,
-                self.state.layer_gap,
-                self.state.node_gap,
-                ui.ctx(),
-            );
+            (self.view.layout, self.state.routes) = layout(&self.state, ui.ctx());
         } else if self.state.route_edges {
             // Freehand mode: best-effort routes against the current
             // positions, recomputed as nodes move.
@@ -232,17 +232,16 @@ fn socket_edges(
 }
 
 #[cfg(feature = "layout")]
-fn layout(
-    graph: &Graph,
-    flow: egui::Direction,
-    layer_gap: f32,
-    node_gap: f32,
-    ctx: &egui::Context,
-) -> (egui_graph::Layout, egui_graph::EdgeRoutes) {
-    let params = egui_graph::LayoutParams::new(flow)
-        .layer_gap(layer_gap)
-        .node_gap(node_gap);
-    egui_graph::layout_routed(layout_nodes(graph, ctx), socket_edges(graph), params)
+fn layout(state: &State, ctx: &egui::Context) -> (egui_graph::Layout, egui_graph::EdgeRoutes) {
+    let params = egui_graph::LayoutParams::new(state.flow)
+        .layer_gap(state.layer_gap)
+        .node_gap(state.node_gap)
+        .socket_aware(state.socket_aware);
+    egui_graph::layout_routed(
+        layout_nodes(&state.graph, ctx),
+        socket_edges(&state.graph),
+        params,
+    )
 }
 
 /// Best-effort routes against the nodes' current freehand positions.
@@ -493,16 +492,12 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                 ui.separator();
                 ui.add_enabled_ui(!state.auto_layout, |ui| {
                     if ui.button("Layout Once").clicked() {
-                        (view.layout, state.routes) = layout(
-                            &state.graph,
-                            state.flow,
-                            state.layer_gap,
-                            state.node_gap,
-                            ui.ctx(),
-                        );
+                        (view.layout, state.routes) = layout(state, ui.ctx());
                     }
                 });
             });
+            #[cfg(feature = "layout")]
+            ui.checkbox(&mut state.socket_aware, "Socket-Aware Layout");
             // With auto-layout the routes follow the layout's corridors;
             // in freehand mode they dodge nodes best-effort.
             #[cfg(feature = "layout")]

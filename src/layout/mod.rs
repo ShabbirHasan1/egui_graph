@@ -40,6 +40,13 @@ pub struct LayoutParams {
     pub node_gap: f32,
     /// The gap between disconnected components of the graph.
     pub component_gap: f32,
+    /// Whether the layout accounts for the socket each edge connects to.
+    ///
+    /// When `false`, sockets are ignored: every edge anchors at its nodes'
+    /// cross-axis centres and socket order plays no part in crossing
+    /// minimisation, matching classic node-size-only layered layouts.
+    /// Defaults to `true`.
+    pub socket_aware: bool,
 }
 
 /// Corridor waypoints for edges, produced by [`layout_routed`] or
@@ -176,6 +183,7 @@ impl LayoutParams {
             layer_gap: Self::DEFAULT_LAYER_GAP,
             node_gap: Self::DEFAULT_NODE_GAP,
             component_gap: Self::DEFAULT_COMPONENT_GAP,
+            socket_aware: true,
         }
     }
 
@@ -194,6 +202,12 @@ impl LayoutParams {
     /// Set the gap between disconnected components of the graph.
     pub fn component_gap(mut self, gap: f32) -> Self {
         self.component_gap = gap;
+        self
+    }
+
+    /// Set whether the layout accounts for the socket each edge connects to.
+    pub fn socket_aware(mut self, socket_aware: bool) -> Self {
+        self.socket_aware = socket_aware;
         self
     }
 }
@@ -303,8 +317,18 @@ pub fn layout_routed(
         size_screen.push(size);
         size_main.push(main);
         size_cross.push(cross);
-        in_anchors.push(resolve_anchors(&node.inputs, cross, node.socket_padding));
-        out_anchors.push(resolve_anchors(&node.outputs, cross, node.socket_padding));
+        // Empty anchor sets make every socket fall back to the cross-axis
+        // centre.
+        let (ins, outs) = if params.socket_aware {
+            (
+                resolve_anchors(&node.inputs, cross, node.socket_padding),
+                resolve_anchors(&node.outputs, cross, node.socket_padding),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        in_anchors.push(ins);
+        out_anchors.push(outs);
     }
 
     // Sanitise the edges; their order must not affect the result.
@@ -339,15 +363,19 @@ pub fn layout_routed(
         local_of[v] = members.len();
         members.push(v);
     }
+    // When ignoring sockets, collapse the socket indices fed to the layout
+    // pipeline so all of a node's edges share one centre port; `cedges`
+    // keeps the originals for route keys.
+    let layout_socket = |socket: usize| if params.socket_aware { socket } else { 0 };
     let mut edges_by_root: BTreeMap<usize, (Vec<CEdge>, Vec<usize>)> = BTreeMap::new();
     for (e, edge) in cedges.iter().enumerate() {
         let root = uf_find(&mut parent, edge.src);
         let (local, edge_ixs) = edges_by_root.entry(root).or_default();
         local.push(CEdge {
             src: local_of[edge.src],
-            src_socket: edge.src_socket,
+            src_socket: layout_socket(edge.src_socket),
             dst: local_of[edge.dst],
-            dst_socket: edge.dst_socket,
+            dst_socket: layout_socket(edge.dst_socket),
         });
         edge_ixs.push(e);
     }
@@ -988,6 +1016,63 @@ mod tests {
         let a = layout_routed(nodes(), edges(), egui::Direction::TopDown);
         let b = layout_routed(nodes(), edges(), egui::Direction::TopDown);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn socket_blind_matches_collapsed_input() {
+        // With `socket_aware(false)`, socketed input lays out identically to
+        // the same graph stripped of socket information.
+        let socketed = || {
+            vec![
+                (
+                    nid(0),
+                    LayoutNode::new([100.0, 100.0])
+                        .socket_padding(10.0)
+                        .inputs(1)
+                        .outputs(3),
+                ),
+                (nid(1), LayoutNode::new([100.0, 300.0]).inputs(1).outputs(1)),
+                (nid(2), LayoutNode::new([100.0, 100.0]).inputs(2).outputs(1)),
+            ]
+        };
+        let edges = vec![
+            ((nid(0), 2), (nid(1), 0)),
+            ((nid(1), 0), (nid(2), 1)),
+            ((nid(0), 0), (nid(2), 0)),
+        ];
+        let blind = layout(
+            socketed(),
+            edges.clone(),
+            LayoutParams::new(egui::Direction::TopDown).socket_aware(false),
+        );
+        let stripped = socketed()
+            .into_iter()
+            .map(|(id, node)| (id, LayoutNode::new(node.size)));
+        let collapsed = edges.iter().map(|&((a, _), (b, _))| ((a, 0), (b, 0)));
+        let plain = layout(stripped, collapsed, egui::Direction::TopDown);
+        assert_eq!(blind, plain);
+    }
+
+    #[test]
+    fn socket_blind_routes_keep_real_socket_keys() {
+        let nodes = vec![
+            (nid(0), LayoutNode::new([100.0, 100.0]).inputs(1).outputs(2)),
+            (nid(1), LayoutNode::new([100.0, 300.0]).inputs(1).outputs(1)),
+            (nid(2), LayoutNode::new([100.0, 100.0]).inputs(2).outputs(1)),
+        ];
+        let edges = vec![
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(0), 1), (nid(2), 1)),
+        ];
+        let (_, routes) = layout_routed(
+            nodes,
+            edges,
+            LayoutParams::new(egui::Direction::LeftToRight).socket_aware(false),
+        );
+        // The long edge still routes around the tall `1`, keyed by its real
+        // socket indices rather than the collapsed ones fed to the pipeline.
+        assert!(routes.route((nid(0), 1), (nid(2), 1), 0).is_some());
     }
 
     /// Minimal xorshift PRNG, avoiding a dev-dependency.
