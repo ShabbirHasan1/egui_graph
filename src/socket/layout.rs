@@ -158,6 +158,47 @@ fn resolve_positions(
     }
 }
 
+/// Cross-axis offsets (relative to the cross-axis min of the node rect) for
+/// `count` sockets evenly spaced along an edge of length `cross_len`, inset by
+/// `socket_padding` at both ends.
+///
+/// A lone socket sits at the padded start of the edge.
+pub(crate) fn evenly_spaced_cross_offsets(
+    count: usize,
+    cross_len: f32,
+    socket_padding: f32,
+) -> impl Iterator<Item = f32> {
+    let gap = if count > 1 {
+        (cross_len - socket_padding * 2.0) / (count - 1) as f32
+    } else {
+        0.0
+    };
+    (0..count).map(move |ix| socket_padding + gap * ix as f32)
+}
+
+/// The position of a socket on the node's main-axis edge given its absolute
+/// cross-axis coordinate.
+fn socket_pos(flow: egui::Direction, rect: egui::Rect, is_input: bool, cross: f32) -> egui::Pos2 {
+    match flow {
+        egui::Direction::LeftToRight => {
+            let x = if is_input { rect.min.x } else { rect.max.x };
+            egui::Pos2::new(x, cross)
+        }
+        egui::Direction::RightToLeft => {
+            let x = if is_input { rect.max.x } else { rect.min.x };
+            egui::Pos2::new(x, cross)
+        }
+        egui::Direction::TopDown => {
+            let y = if is_input { rect.min.y } else { rect.max.y };
+            egui::Pos2::new(cross, y)
+        }
+        egui::Direction::BottomUp => {
+            let y = if is_input { rect.max.y } else { rect.min.y };
+            egui::Pos2::new(cross, y)
+        }
+    }
+}
+
 /// Evenly space sockets along the edge.
 fn resolve_evenly_spaced(
     count: usize,
@@ -166,51 +207,14 @@ fn resolve_evenly_spaced(
     socket_padding: f32,
     is_input: bool,
 ) -> BTreeMap<usize, egui::Pos2> {
-    let mut result = BTreeMap::new();
-    if count == 0 {
-        return result;
-    }
-    let gap = |len: f32| {
-        if count > 1 {
-            len / (count - 1) as f32
-        } else {
-            0.0
-        }
+    let (cross_min, cross_len) = match flow {
+        egui::Direction::LeftToRight | egui::Direction::RightToLeft => (rect.min.y, rect.height()),
+        egui::Direction::TopDown | egui::Direction::BottomUp => (rect.min.x, rect.width()),
     };
-    let (start, step) = match flow {
-        egui::Direction::LeftToRight => {
-            let len = rect.height() - socket_padding * 2.0;
-            let main_x = if is_input { rect.min.x } else { rect.max.x };
-            let start = egui::Pos2::new(main_x, rect.min.y + socket_padding);
-            let step = egui::Vec2::new(0.0, gap(len));
-            (start, step)
-        }
-        egui::Direction::RightToLeft => {
-            let len = rect.height() - socket_padding * 2.0;
-            let main_x = if is_input { rect.max.x } else { rect.min.x };
-            let start = egui::Pos2::new(main_x, rect.min.y + socket_padding);
-            let step = egui::Vec2::new(0.0, gap(len));
-            (start, step)
-        }
-        egui::Direction::TopDown => {
-            let len = rect.width() - socket_padding * 2.0;
-            let main_y = if is_input { rect.min.y } else { rect.max.y };
-            let start = egui::Pos2::new(rect.min.x + socket_padding, main_y);
-            let step = egui::Vec2::new(gap(len), 0.0);
-            (start, step)
-        }
-        egui::Direction::BottomUp => {
-            let len = rect.width() - socket_padding * 2.0;
-            let main_y = if is_input { rect.max.y } else { rect.min.y };
-            let start = egui::Pos2::new(rect.min.x + socket_padding, main_y);
-            let step = egui::Vec2::new(gap(len), 0.0);
-            (start, step)
-        }
-    };
-    for ix in 0..count {
-        result.insert(ix, start + step * ix as f32);
-    }
-    result
+    evenly_spaced_cross_offsets(count, cross_len, socket_padding)
+        .enumerate()
+        .map(|(ix, offset)| (ix, socket_pos(flow, rect, is_input, cross_min + offset)))
+        .collect()
 }
 
 /// Explicit mode: place sockets at the main-axis edge, using the stored
@@ -222,26 +226,6 @@ fn resolve_explicit(
     is_input: bool,
 ) -> BTreeMap<usize, egui::Pos2> {
     map.iter()
-        .map(|(&ix, &cross)| {
-            let pos = match flow {
-                egui::Direction::LeftToRight => {
-                    let main_x = if is_input { rect.min.x } else { rect.max.x };
-                    egui::Pos2::new(main_x, cross)
-                }
-                egui::Direction::RightToLeft => {
-                    let main_x = if is_input { rect.max.x } else { rect.min.x };
-                    egui::Pos2::new(main_x, cross)
-                }
-                egui::Direction::TopDown => {
-                    let main_y = if is_input { rect.min.y } else { rect.max.y };
-                    egui::Pos2::new(cross, main_y)
-                }
-                egui::Direction::BottomUp => {
-                    let main_y = if is_input { rect.max.y } else { rect.min.y };
-                    egui::Pos2::new(cross, main_y)
-                }
-            };
-            (ix, pos)
-        })
+        .map(|(&ix, &cross)| (ix, socket_pos(flow, rect, is_input, cross)))
         .collect()
 }

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 pub use layout::layout;
 pub use node::{FramedResponse, NodeCtx, NodeId, NodeInteraction};
 pub use socket::layout::{grid::SocketGrid, SocketLayout};
-pub use socket::{SocketKind, SocketResponses};
+pub use socket::{socket_padding, SocketKind, SocketResponses};
 
 pub mod bezier;
 pub mod edge;

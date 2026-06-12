@@ -60,6 +60,20 @@ impl SocketResponses {
     }
 }
 
+/// The padding from the ends of a node's edge within which its sockets are
+/// laid out, as used by [`Node`](crate::node::Node).
+///
+/// Useful for deriving socket positions outside of node instantiation, e.g.
+/// when providing socket offsets to the automatic layout.
+pub fn socket_padding(style: &egui::Style) -> f32 {
+    let min_interact_len = style
+        .spacing
+        .interact_size
+        .x
+        .min(style.spacing.interact_size.y);
+    style.visuals.window_corner_radius.ne as f32 + min_interact_len * 0.5
+}
+
 /// Adaptive segment count for a semicircle, matching egui's circle tessellation
 /// heuristic (halved, since a semicircle spans half the arc).
 fn semicircle_segments(radius: f32) -> usize {
