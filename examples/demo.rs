@@ -29,6 +29,9 @@ struct State {
     edge_curvature: f32,
     #[cfg(feature = "layout")]
     auto_layout: bool,
+    /// Whether long edges follow the auto-layout's corridor routes.
+    #[cfg(feature = "layout")]
+    route_edges: bool,
     #[cfg(feature = "layout")]
     layer_gap: f32,
     #[cfg(feature = "layout")]
@@ -92,6 +95,8 @@ impl App {
             flow: egui::Direction::TopDown,
             #[cfg(feature = "layout")]
             auto_layout: true,
+            #[cfg(feature = "layout")]
+            route_edges: true,
             #[cfg(feature = "layout")]
             layer_gap: egui_graph::LayoutParams::DEFAULT_LAYER_GAP,
             #[cfg(feature = "layout")]
@@ -390,11 +395,17 @@ fn edges(ectx: &mut egui_graph::EdgesCtx, ui: &mut egui::Ui, state: &mut State) 
         let a = egui_graph::NodeId::from_u64(na.index() as u64);
         let b = egui_graph::NodeId::from_u64(nb.index() as u64);
         let occurrence = occurrences.entry(((a, output), (b, input))).or_default();
+        // Routes only match node positions while auto-layout drives them, so
+        // edges fall back to direct curves during freehand arrangement.
         #[cfg(feature = "layout")]
-        let waypoints = state
-            .routes
-            .route((a, output), (b, input), *occurrence)
-            .unwrap_or(&[]);
+        let waypoints = if state.auto_layout && state.route_edges {
+            state
+                .routes
+                .route((a, output), (b, input), *occurrence)
+                .unwrap_or(&[])
+        } else {
+            &[]
+        };
         #[cfg(not(feature = "layout"))]
         let waypoints: &[egui::Pos2] = &[];
         *occurrence += 1;
@@ -452,6 +463,12 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                         );
                     }
                 });
+            });
+            // Routes only apply while auto-layout keeps them in sync with
+            // node positions.
+            #[cfg(feature = "layout")]
+            ui.add_enabled_ui(state.auto_layout, |ui| {
+                ui.checkbox(&mut state.route_edges, "Edge Routing");
             });
             ui.checkbox(&mut state.dot_grid, "Show Dot Grid");
             ui.checkbox(&mut state.center_view, "Center View");

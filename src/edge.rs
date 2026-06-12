@@ -68,6 +68,10 @@ impl<'a> Edge<'a> {
     /// over unrelated nodes. Waypoints share the node layout's coordinate
     /// space.
     ///
+    /// Routes are only meaningful while node positions match the layout that
+    /// produced them - when nodes are arranged freely instead, omit the
+    /// waypoints so edges fall back to direct curves.
+    ///
     /// Default: none (a single curve directly between the sockets).
     pub fn waypoints(mut self, waypoints: &'a [egui::Pos2]) -> Self {
         self.waypoints = waypoints;

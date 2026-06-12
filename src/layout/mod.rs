@@ -44,6 +44,10 @@ pub struct LayoutParams {
 /// A route exists only for an edge that spans multiple layers *and* whose
 /// direct socket-to-socket curve could overlap a node; all other edges look
 /// best as plain curves.
+///
+/// Routes are tied to the [`Layout`] they were produced with: once nodes
+/// move away from it (e.g. dragged by the user), discard them rather than
+/// threading edges through outdated corridors.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EdgeRoutes {
     routes: HashMap<((NodeId, OutputIx), (NodeId, InputIx)), Vec<Vec<egui::Pos2>>>,
