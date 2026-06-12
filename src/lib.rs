@@ -528,6 +528,15 @@ impl GraphTempMemory {
     pub fn node_sizes(&self) -> &NodeSizes {
         &self.node_sizes
     }
+
+    /// The most recently resolved socket positions for each node.
+    ///
+    /// Useful for deriving exact node-relative socket offsets (e.g. for
+    /// `LayoutNode::input_offsets`) when nodes position their sockets
+    /// explicitly.
+    pub fn node_sockets(&self) -> &HashMap<NodeId, NodeSockets> {
+        &self.sockets
+    }
 }
 
 impl NodeSockets {

@@ -651,4 +651,102 @@ mod tests {
         let l = layout(nodes, Vec::new(), egui::Direction::LeftToRight);
         assert_eq!(l[&nid(0)], egui::Pos2::new(-50.0, -25.0));
     }
+
+    /// Minimal xorshift PRNG, avoiding a dev-dependency.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn range(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// A random graph of up to 40 nodes, including self-loops, multi-edges
+    /// and cycles.
+    #[allow(clippy::type_complexity)]
+    fn random_graph(
+        seed: u64,
+    ) -> (
+        Vec<(NodeId, egui::Vec2)>,
+        Vec<((NodeId, usize), (NodeId, usize))>,
+    ) {
+        let mut rng = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let num_nodes = 1 + rng.range(40);
+        let nodes = (0..num_nodes)
+            .map(|v| {
+                let size =
+                    egui::Vec2::new(40.0 + rng.range(160) as f32, 30.0 + rng.range(120) as f32);
+                (nid(v as u64), size)
+            })
+            .collect();
+        let edges = (0..rng.range(2 * num_nodes + 1))
+            .map(|_| {
+                let a = nid(rng.range(num_nodes) as u64);
+                let b = nid(rng.range(num_nodes) as u64);
+                ((a, rng.range(4)), (b, rng.range(4)))
+            })
+            .collect();
+        (nodes, edges)
+    }
+
+    fn layout_random(seed: u64, flow: egui::Direction) -> Layout {
+        let (nodes, edges) = random_graph(seed);
+        let nodes = nodes.into_iter().map(|(id, size)| {
+            let node = LayoutNode::new(size)
+                .socket_padding(8.0)
+                .inputs(4)
+                .outputs(4);
+            (id, node)
+        });
+        layout(nodes, edges, flow)
+    }
+
+    #[test]
+    fn random_graphs_are_total_and_deterministic() {
+        for seed in 0..50 {
+            let (nodes, _) = random_graph(seed);
+            let l = layout_random(seed, egui::Direction::LeftToRight);
+            assert_eq!(l.len(), nodes.len());
+            assert!(l.values().all(|p| p.x.is_finite() && p.y.is_finite()));
+            assert_eq!(l, layout_random(seed, egui::Direction::LeftToRight));
+        }
+    }
+
+    #[test]
+    fn random_graphs_never_overlap_nodes() {
+        for seed in 0..50 {
+            let (nodes, _) = random_graph(seed);
+            let l = layout_random(seed, egui::Direction::TopDown);
+            let rects: Vec<egui::Rect> = nodes
+                .iter()
+                .map(|&(id, size)| egui::Rect::from_min_size(l[&id], size))
+                .collect();
+            for (i, a) in rects.iter().enumerate() {
+                for b in &rects[i + 1..] {
+                    assert!(
+                        !a.intersects(b.shrink(1.0)),
+                        "seed {seed}: {a:?} overlaps {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn random_graphs_mirror_between_opposite_flows() {
+        for seed in 0..20 {
+            let (nodes, _) = random_graph(seed);
+            let ltr = layout_random(seed, egui::Direction::LeftToRight);
+            let rtl = layout_random(seed, egui::Direction::RightToLeft);
+            for &(id, size) in &nodes {
+                let c_ltr = ltr[&id] + size * 0.5;
+                let c_rtl = rtl[&id] + size * 0.5;
+                assert!((c_rtl.x + c_ltr.x).abs() < 1e-2, "seed {seed}");
+                assert!((c_rtl.y - c_ltr.y).abs() < 1e-2, "seed {seed}");
+            }
+        }
+    }
 }
