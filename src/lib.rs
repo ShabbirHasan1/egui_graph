@@ -724,13 +724,21 @@ impl EdgeInProgress {
     /// Short-hand for painting the in-progress edge with some reasonable defaults.
     ///
     /// If you require custom styling of the in-progress edge, use
-    /// [`EdgeInProgress::bezier_cubic`] or the individual fields to paint it
-    /// however you wish.
+    /// [`EdgeInProgress::show_styled`], [`EdgeInProgress::bezier_cubic`] or the
+    /// individual fields to paint it however you wish.
     pub fn show(&self, ui: &egui::Ui, curvature: f32) {
+        self.show_styled(ui, None, curvature);
+    }
+
+    /// As [`EdgeInProgress::show`], but with an optional `stroke` override, so the
+    /// in-progress edge can match styled edges.
+    ///
+    /// When `stroke` is `None`, `ui.visuals().widgets.active.fg_stroke` is used.
+    pub fn show_styled(&self, ui: &egui::Ui, stroke: Option<egui::Stroke>, curvature: f32) {
         let dist_per_pt = crate::edge::Edge::DEFAULT_DISTANCE_PER_POINT;
         let bezier = self.bezier_cubic(curvature);
         let pts = bezier.flatten(dist_per_pt).collect();
-        let stroke = ui.visuals().widgets.active.fg_stroke;
+        let stroke = stroke.unwrap_or(ui.visuals().widgets.active.fg_stroke);
         ui.painter().add(egui::Shape::line(pts, stroke));
     }
 }

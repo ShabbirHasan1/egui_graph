@@ -6,15 +6,21 @@ use std::ops;
 /// Handles interaction (selection, deselection, deletion) and painting the
 /// bezier curve.
 ///
-/// Adopts styling from the following:
+/// By default, the stroke for each state is adopted from the egui visuals:
 ///
-/// - Selected: `ui.visuals().selection.fg_stroke`.
+/// - Selected: `ui.visuals().selection.stroke`.
 /// - Hovered: `ui.visuals().widgets.hovered.fg_stroke`.
 /// - Otherwise: `ui.visuals().widgets.noninteractive.fg_stroke`.
+///
+/// Each of these may be overridden per-edge via [`Edge::selected_stroke`],
+/// [`Edge::hovered_stroke`] and [`Edge::stroke`].
 pub struct Edge<'a> {
     edge: ((NodeId, OutputIx), (NodeId, InputIx)),
     distance_per_point: f32,
     curvature: f32,
+    stroke: Option<egui::Stroke>,
+    hovered_stroke: Option<egui::Stroke>,
+    selected_stroke: Option<egui::Stroke>,
     selected: &'a mut bool,
 }
 
@@ -45,6 +51,9 @@ impl<'a> Edge<'a> {
             edge: (a, b),
             distance_per_point: Self::DEFAULT_DISTANCE_PER_POINT,
             curvature: bezier::Cubic::DEFAULT_CURVATURE,
+            stroke: None,
+            hovered_stroke: None,
+            selected_stroke: None,
             selected,
         }
     }
@@ -74,12 +83,40 @@ impl<'a> Edge<'a> {
         self
     }
 
+    /// Override the stroke used when the edge is in its default (unselected,
+    /// unhovered) state.
+    ///
+    /// Default: `ui.visuals().widgets.noninteractive.fg_stroke`.
+    pub fn stroke(mut self, stroke: egui::Stroke) -> Self {
+        self.stroke = Some(stroke);
+        self
+    }
+
+    /// Override the stroke used when the edge is hovered.
+    ///
+    /// Default: `ui.visuals().widgets.hovered.fg_stroke`.
+    pub fn hovered_stroke(mut self, stroke: egui::Stroke) -> Self {
+        self.hovered_stroke = Some(stroke);
+        self
+    }
+
+    /// Override the stroke used when the edge is selected.
+    ///
+    /// Default: `ui.visuals().selection.stroke`.
+    pub fn selected_stroke(mut self, stroke: egui::Stroke) -> Self {
+        self.selected_stroke = Some(stroke);
+        self
+    }
+
     /// Process any user interaction with the edge and present it.
     pub fn show(self, ectx: &mut EdgesCtx, ui: &mut egui::Ui) -> EdgeResponse {
         let Self {
             edge: ((a, output), (b, input)),
             distance_per_point,
             curvature,
+            stroke,
+            hovered_stroke,
+            selected_stroke,
             selected,
         } = self;
 
@@ -170,11 +207,11 @@ impl<'a> Edge<'a> {
         // Paint the edge.
         let pts: Vec<_> = bezier.flatten(distance_per_point).collect();
         let stroke = if *selected {
-            ui.style().visuals.selection.stroke
+            selected_stroke.unwrap_or(ui.style().visuals.selection.stroke)
         } else if show_hover || (under_selection_rect && ui.input(|i| i.modifiers.shift)) {
-            ui.style().visuals.widgets.hovered.fg_stroke
+            hovered_stroke.unwrap_or(ui.style().visuals.widgets.hovered.fg_stroke)
         } else {
-            ui.style().visuals.widgets.noninteractive.fg_stroke
+            stroke.unwrap_or(ui.style().visuals.widgets.noninteractive.fg_stroke)
         };
         ui.painter().add(egui::Shape::line(pts, stroke));
 
