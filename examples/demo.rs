@@ -29,7 +29,10 @@ struct State {
     edge_curvature: f32,
     #[cfg(feature = "layout")]
     auto_layout: bool,
-    node_spacing: [f32; 2],
+    #[cfg(feature = "layout")]
+    layer_gap: f32,
+    #[cfg(feature = "layout")]
+    node_gap: f32,
     node_id_map: HashMap<egui_graph::NodeId, NodeIndex>,
     center_view: bool,
     dot_grid: bool,
@@ -86,7 +89,10 @@ impl App {
             flow: egui::Direction::TopDown,
             #[cfg(feature = "layout")]
             auto_layout: true,
-            node_spacing: [1.0, 1.0],
+            #[cfg(feature = "layout")]
+            layer_gap: egui_graph::LayoutParams::DEFAULT_LAYER_GAP,
+            #[cfg(feature = "layout")]
+            node_gap: egui_graph::LayoutParams::DEFAULT_NODE_GAP,
             node_id_map: Default::default(),
             center_view: false,
             dot_grid: true,
@@ -104,7 +110,8 @@ impl eframe::App for App {
             self.view.layout = layout(
                 &self.state.graph,
                 self.state.flow,
-                self.state.node_spacing,
+                self.state.layer_gap,
+                self.state.node_gap,
                 ui.ctx(),
             );
         }
@@ -148,16 +155,30 @@ fn graph_id() -> egui::Id {
     egui_graph::id("Demo Graph")
 }
 
+/// The number of input/output sockets for a node: one per socket index, up
+/// to the max index used by its edges.
+fn socket_counts(graph: &Graph, n: NodeIndex) -> (usize, usize) {
+    let inputs = graph
+        .edges_directed(n, petgraph::Incoming)
+        .fold(0, |max, e| std::cmp::max(max, e.weight().1 + 1));
+    let outputs = graph
+        .edges_directed(n, petgraph::Outgoing)
+        .fold(0, |max, e| std::cmp::max(max, e.weight().0 + 1));
+    (inputs, outputs)
+}
+
 #[cfg(feature = "layout")]
 fn layout(
     graph: &Graph,
     flow: egui::Direction,
-    node_spacing: [f32; 2],
+    layer_gap: f32,
+    node_gap: f32,
     ctx: &egui::Context,
 ) -> egui_graph::Layout {
     let graph_id = graph_id();
+    let socket_padding = egui_graph::socket_padding(&ctx.global_style());
     // Access graph memory once and iterate inside to avoid repeated locks
-    let nodes_vec = egui_graph::with_graph_memory(ctx, graph_id, |gmem| {
+    let nodes = egui_graph::with_graph_memory(ctx, graph_id, |gmem| {
         let node_sizes = gmem.node_sizes();
         graph
             .node_indices()
@@ -167,27 +188,26 @@ fn layout(
                     .get(&node_id)
                     .cloned()
                     .unwrap_or_else(|| [200.0, 50.0].into());
-                (node_id, size)
+                let (inputs, outputs) = socket_counts(graph, n);
+                let node = egui_graph::LayoutNode::new(size)
+                    .socket_padding(socket_padding)
+                    .inputs(inputs)
+                    .outputs(outputs);
+                (node_id, node)
             })
             .collect::<Vec<_>>()
     });
-    let nodes = nodes_vec.into_iter();
-    let edges = graph
-        .edge_indices()
-        .filter_map(|e| graph.edge_endpoints(e))
-        .map(|(a, b)| {
-            (
-                egui_graph::NodeId::from_u64(a.index() as u64),
-                egui_graph::NodeId::from_u64(b.index() as u64),
-            )
-        });
-    let mut layout = egui_graph::layout(nodes, edges, flow);
-    // Apply custom offset spacing to the layout
-    for pos in layout.values_mut() {
-        pos.x *= node_spacing[0];
-        pos.y *= node_spacing[1];
-    }
-    layout
+    let edges = graph.edge_indices().filter_map(|e| {
+        let (a, b) = graph.edge_endpoints(e)?;
+        let &(output, input) = graph.edge_weight(e)?;
+        let a = egui_graph::NodeId::from_u64(a.index() as u64);
+        let b = egui_graph::NodeId::from_u64(b.index() as u64);
+        Some(((a, output), (b, input)))
+    });
+    let params = egui_graph::LayoutParams::new(flow)
+        .layer_gap(layer_gap)
+        .node_gap(node_gap);
+    egui_graph::layout(nodes, edges, params)
 }
 
 fn gui(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
@@ -238,14 +258,7 @@ fn set_edge_style(style: &mut egui::Style, state: &mut State) {
 fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) {
     let indices: Vec<_> = state.graph.node_indices().collect();
     for n in indices {
-        let inputs = state
-            .graph
-            .edges_directed(n, petgraph::Incoming)
-            .fold(0, |max, e| std::cmp::max(max, e.weight().1 + 1));
-        let outputs = state
-            .graph
-            .edges_directed(n, petgraph::Outgoing)
-            .fold(0, |max, e| std::cmp::max(max, e.weight().0 + 1));
+        let (inputs, outputs) = socket_counts(&state.graph, n);
         let node = &mut state.graph[n];
         let node_id = egui_graph::NodeId::from_u64(n.index() as u64);
         state.node_id_map.insert(node_id, n);
@@ -413,8 +426,13 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                 ui.separator();
                 ui.add_enabled_ui(!state.auto_layout, |ui| {
                     if ui.button("Layout Once").clicked() {
-                        view.layout =
-                            layout(&state.graph, state.flow, state.node_spacing, ui.ctx());
+                        view.layout = layout(
+                            &state.graph,
+                            state.flow,
+                            state.layer_gap,
+                            state.node_gap,
+                            ui.ctx(),
+                        );
                     }
                 });
             });
@@ -430,13 +448,15 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                 ui.label("Edge curvature:");
                 ui.add(egui::Slider::new(&mut state.edge_curvature, 0.0..=1.0));
             });
+            #[cfg(feature = "layout")]
             ui.horizontal(|ui| {
-                ui.label("Node spacing X:");
-                ui.add(egui::Slider::new(&mut state.node_spacing[0], 0.75..=2.0));
+                ui.label("Layer gap:");
+                ui.add(egui::Slider::new(&mut state.layer_gap, 10.0..=200.0));
             });
+            #[cfg(feature = "layout")]
             ui.horizontal(|ui| {
-                ui.label("Node spacing Y:");
-                ui.add(egui::Slider::new(&mut state.node_spacing[1], 0.5..=2.0));
+                ui.label("Node gap:");
+                ui.add(egui::Slider::new(&mut state.node_gap, 10.0..=200.0));
             });
             ui.checkbox(&mut state.custom_edge_style, "Custom Edge Style");
             ui.add_enabled_ui(state.custom_edge_style, |ui| {
