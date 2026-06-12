@@ -7,10 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
-    let mut options = eframe::NativeOptions::default();
-    if std::env::var("DEMO_SIM").is_ok() {
-        options.viewport = egui::ViewportBuilder::default().with_maximized(true);
-    }
+    let options = eframe::NativeOptions::default();
     let name = "`egui_graph` demo";
     eframe::run_native(name, options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
@@ -119,37 +116,12 @@ impl App {
             immutable: false,
         };
         let view = Default::default();
-        #[cfg(feature = "layout")]
-        let state = {
-            let mut state = state;
-            if std::env::var("DEMO_SIM").is_ok() {
-                state.auto_layout = true;
-                state.route_edges = true;
-            }
-            state
-        };
         App { view, state }
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // ---- temporary diagnostics ----
-        if std::env::var("DEMO_SIM").is_ok() {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static FRAME: AtomicU32 = AtomicU32::new(0);
-            let frame = FRAME.fetch_add(1, Ordering::Relaxed);
-            let dt = ui.input(|i| i.unstable_dt);
-            if frame < 10 || dt > 0.1 {
-                eprintln!(
-                    "frame {frame}: dt {:.3}s, scene_rect: {:?}",
-                    dt, self.view.scene_rect
-                );
-            }
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(50));
-        }
-        // ---- end temporary diagnostics ----
         #[cfg(feature = "layout")]
         if self.state.auto_layout {
             (self.view.layout, self.state.routes) = layout(&self.state, ui.ctx());

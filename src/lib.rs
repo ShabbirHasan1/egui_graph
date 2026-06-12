@@ -982,12 +982,6 @@ fn graph_interaction(
 // Paint a subtle dot grid to check camera movement.
 fn paint_dot_grid(visible_rect: egui::Rect, ui: &mut egui::Ui) {
     let dot_step = ui.spacing().interact_size.y;
-    {
-        let dots = (visible_rect.width() / dot_step) * (visible_rect.height() / dot_step);
-        if dots > 20_000.0 {
-            eprintln!("dot grid: {dots:.0} dots, visible_rect: {visible_rect:?}");
-        }
-    }
     let vis = ui.style().noninteractive();
     let x_dots = (visible_rect.min.x / dot_step) as i32..=(visible_rect.max.x / dot_step) as i32;
     let y_dots = (visible_rect.min.y / dot_step) as i32..=(visible_rect.max.y / dot_step) as i32;
