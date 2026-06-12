@@ -33,6 +33,9 @@ struct State {
     layer_gap: f32,
     #[cfg(feature = "layout")]
     node_gap: f32,
+    /// Corridor waypoints for long edges, from the most recent auto-layout.
+    #[cfg(feature = "layout")]
+    routes: egui_graph::EdgeRoutes,
     node_id_map: HashMap<egui_graph::NodeId, NodeIndex>,
     center_view: bool,
     dot_grid: bool,
@@ -93,6 +96,8 @@ impl App {
             layer_gap: egui_graph::LayoutParams::DEFAULT_LAYER_GAP,
             #[cfg(feature = "layout")]
             node_gap: egui_graph::LayoutParams::DEFAULT_NODE_GAP,
+            #[cfg(feature = "layout")]
+            routes: Default::default(),
             node_id_map: Default::default(),
             center_view: false,
             dot_grid: true,
@@ -107,7 +112,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(feature = "layout")]
         if self.state.auto_layout {
-            self.view.layout = layout(
+            (self.view.layout, self.state.routes) = layout(
                 &self.state.graph,
                 self.state.flow,
                 self.state.layer_gap,
@@ -174,7 +179,7 @@ fn layout(
     layer_gap: f32,
     node_gap: f32,
     ctx: &egui::Context,
-) -> egui_graph::Layout {
+) -> (egui_graph::Layout, egui_graph::EdgeRoutes) {
     let graph_id = graph_id();
     let socket_padding = egui_graph::socket_padding(&ctx.global_style());
     // Access graph memory once and iterate inside to avoid repeated locks
@@ -207,7 +212,7 @@ fn layout(
     let params = egui_graph::LayoutParams::new(flow)
         .layer_gap(layer_gap)
         .node_gap(node_gap);
-    egui_graph::layout(nodes, edges, params)
+    egui_graph::layout_routed(nodes, edges, params)
 }
 
 fn gui(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
@@ -376,15 +381,27 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
 }
 
 fn edges(ectx: &mut egui_graph::EdgesCtx, ui: &mut egui::Ui, state: &mut State) {
+    // Count edge occurrences per socket pair to look up the matching route.
+    let mut occurrences: HashMap<_, usize> = HashMap::new();
     // Instantiate all edges.
     for e in state.graph.edge_indices().collect::<Vec<_>>() {
         let (na, nb) = state.graph.edge_endpoints(e).unwrap();
         let (output, input) = *state.graph.edge_weight(e).unwrap();
         let a = egui_graph::NodeId::from_u64(na.index() as u64);
         let b = egui_graph::NodeId::from_u64(nb.index() as u64);
+        let occurrence = occurrences.entry(((a, output), (b, input))).or_default();
+        #[cfg(feature = "layout")]
+        let waypoints = state
+            .routes
+            .route((a, output), (b, input), *occurrence)
+            .unwrap_or(&[]);
+        #[cfg(not(feature = "layout"))]
+        let waypoints: &[egui::Pos2] = &[];
+        *occurrence += 1;
         let mut selected = state.interaction.selection.edges.contains(&e);
         let response = egui_graph::edge::Edge::new((a, output), (b, input), &mut selected)
             .curvature_factor(state.edge_curvature)
+            .waypoints(waypoints)
             .show(ectx, ui);
 
         if response.deleted() {
@@ -426,7 +443,7 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                 ui.separator();
                 ui.add_enabled_ui(!state.auto_layout, |ui| {
                     if ui.button("Layout Once").clicked() {
-                        view.layout = layout(
+                        (view.layout, state.routes) = layout(
                             &state.graph,
                             state.flow,
                             state.layer_gap,

@@ -7,6 +7,15 @@ pub struct Cubic {
     pub to: egui::Pos2,
 }
 
+/// A smooth, piecewise-cubic path threaded through a sequence of waypoints.
+///
+/// Used to route edges through the corridors reserved by the automatic
+/// layout; without waypoints it is equivalent to a single [`Cubic`].
+#[derive(Clone, Debug)]
+pub struct Path {
+    segments: Vec<Cubic>,
+}
+
 impl Cubic {
     /// Maximum proportion of the socket-to-socket distance used for control points.
     pub(crate) const MAX_CURVATURE_FACTOR: f32 = 0.5;
@@ -67,7 +76,7 @@ impl Cubic {
         let distance = self.from.distance(self.ctrl1)
             + self.ctrl1.distance(self.ctrl2)
             + self.ctrl2.distance(self.to);
-        let samples = (distance / distance_per_point).round() as usize;
+        let samples = ((distance / distance_per_point).round() as usize).max(1);
         (0..=samples).map(move |ix| {
             let t = ix as f32 / samples as f32;
             self.sample(t)
@@ -143,6 +152,113 @@ impl Cubic {
     }
 }
 
+impl Path {
+    /// Construct a path from an edge's endpoints (and their socket normals)
+    /// threaded through the given intermediate waypoints, e.g. a corridor
+    /// route produced by the automatic layout.
+    ///
+    /// The curve leaves each socket along its normal, exactly as in
+    /// [`Cubic::from_edge_points`], and passes through each waypoint aligned
+    /// with the flow axis (derived from the output socket's normal), keeping
+    /// the curve within the corridor the waypoint marks.
+    ///
+    /// `curvature` is the normalised value described in
+    /// [`Cubic::from_edge_points`].
+    pub fn from_edge_points_via(
+        a: (egui::Pos2, egui::Vec2),
+        waypoints: &[egui::Pos2],
+        b: (egui::Pos2, egui::Vec2),
+        curvature: f32,
+    ) -> Self {
+        let (from, a_norm) = a;
+        let (to, b_norm) = b;
+
+        let mut points = Vec::with_capacity(waypoints.len() + 2);
+        points.push(from);
+        points.extend(waypoints.iter().copied());
+        points.push(to);
+        points.dedup();
+        if points.len() < 3 {
+            let segments = vec![Cubic::from_edge_points(a, b, curvature)];
+            return Self { segments };
+        }
+
+        // Unit travel directions at every point: along the socket normals at
+        // the ends, flow-aligned at the waypoints (the output normal points
+        // along the flow axis).
+        let flow = a_norm;
+        let n = points.len();
+        let mut tangents = Vec::with_capacity(n);
+        tangents.push(a_norm);
+        for i in 1..n - 1 {
+            let chord = points[i + 1] - points[i - 1];
+            let along = flow * chord.dot(flow);
+            let dir = if along.length_sq() > f32::EPSILON {
+                along
+            } else if chord.length_sq() > f32::EPSILON {
+                chord
+            } else {
+                flow
+            };
+            tangents.push(dir.normalized());
+        }
+        tangents.push(-b_norm);
+
+        // One cubic per consecutive pair, sharing tangents at the joints for
+        // a C1-continuous curve. Handle lengths scale with each segment's
+        // own chord, avoiding overshoot on unevenly spaced waypoints.
+        let factor = curvature.clamp(0.0, 1.0) * Cubic::MAX_CURVATURE_FACTOR;
+        let segments = (0..n - 1)
+            .map(|i| {
+                let len = points[i].distance(points[i + 1]) * factor;
+                Cubic {
+                    from: points[i],
+                    ctrl1: points[i] + tangents[i] * len,
+                    ctrl2: points[i + 1] - tangents[i + 1] * len,
+                    to: points[i + 1],
+                }
+            })
+            .collect();
+        Self { segments }
+    }
+
+    /// The path's piecewise cubic segments.
+    pub fn segments(&self) -> &[Cubic] {
+        &self.segments
+    }
+
+    /// Flatten the path into a list of points, ready to draw a polyline.
+    ///
+    /// See [`Cubic::flatten`]. Joint points shared by consecutive segments
+    /// are emitted once.
+    pub fn flatten(&self, distance_per_point: f32) -> impl Iterator<Item = egui::Pos2> + '_ {
+        self.segments.iter().enumerate().flat_map(move |(i, seg)| {
+            let skip = if i == 0 { 0 } else { 1 };
+            seg.flatten(distance_per_point).skip(skip)
+        })
+    }
+
+    /// Find the approximate closest point on the path to the given point.
+    ///
+    /// See [`Cubic::closest_point`].
+    pub fn closest_point(&self, distance_per_point: f32, target: egui::Pos2) -> egui::Pos2 {
+        self.segments
+            .iter()
+            .map(|seg| seg.closest_point(distance_per_point, target))
+            .min_by(|a, b| a.distance_sq(target).total_cmp(&b.distance_sq(target)))
+            .unwrap_or(egui::Pos2::ZERO)
+    }
+
+    /// Whether or not the path intersects the given rectangle.
+    ///
+    /// See [`Cubic::intersects_rect`].
+    pub fn intersects_rect(&self, distance_per_point: f32, rect: egui::Rect) -> bool {
+        self.segments
+            .iter()
+            .any(|seg| seg.intersects_rect(distance_per_point, rect))
+    }
+}
+
 // True if any of the area of the rect intersects the line.
 fn rect_intersects_line(r: egui::Rect, (a, b): (egui::Pos2, egui::Pos2)) -> bool {
     if !r.intersects(egui::Rect::from_two_pos(a, b)) {
@@ -173,4 +289,75 @@ fn lines_intersect(a: (egui::Pos2, egui::Pos2), b: (egui::Pos2, egui::Pos2)) -> 
     let t2 = tri_area(b1, b2, a2);
     let res2 = (t1 > 0.0) != (t2 > 0.0) && !(t1 == 0.0 && t2 == 0.0);
     res1 && res2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cubic, Path};
+
+    #[test]
+    fn no_waypoints_matches_cubic() {
+        let a = (egui::pos2(0.0, 0.0), egui::vec2(1.0, 0.0));
+        let b = (egui::pos2(100.0, 50.0), egui::vec2(-1.0, 0.0));
+        let path = Path::from_edge_points_via(a, &[], b, 0.5);
+        let cubic = Cubic::from_edge_points(a, b, 0.5);
+        assert_eq!(path.segments().len(), 1);
+        let seg = path.segments()[0];
+        assert_eq!(seg.from, cubic.from);
+        assert_eq!(seg.ctrl1, cubic.ctrl1);
+        assert_eq!(seg.ctrl2, cubic.ctrl2);
+        assert_eq!(seg.to, cubic.to);
+    }
+
+    #[test]
+    fn path_passes_through_waypoints() {
+        let a = (egui::pos2(0.0, 0.0), egui::vec2(1.0, 0.0));
+        let b = (egui::pos2(200.0, 0.0), egui::vec2(-1.0, 0.0));
+        let waypoints = [egui::pos2(100.0, 60.0)];
+        let path = Path::from_edge_points_via(a, &waypoints, b, 0.5);
+        assert_eq!(path.segments().len(), 2);
+        // The joint sits exactly on the waypoint.
+        assert_eq!(path.segments()[0].to, waypoints[0]);
+        assert_eq!(path.segments()[1].from, waypoints[0]);
+    }
+
+    #[test]
+    fn joints_are_smooth() {
+        // C1 continuity: the handles either side of a joint are collinear.
+        let a = (egui::pos2(0.0, 0.0), egui::vec2(1.0, 0.0));
+        let b = (egui::pos2(300.0, 40.0), egui::vec2(-1.0, 0.0));
+        let waypoints = [egui::pos2(120.0, 80.0), egui::pos2(210.0, -30.0)];
+        let path = Path::from_edge_points_via(a, &waypoints, b, 0.5);
+        for pair in path.segments().windows(2) {
+            let joint = pair[0].to;
+            let into = (joint - pair[0].ctrl2).normalized();
+            let out = (pair[1].ctrl1 - joint).normalized();
+            assert!((into - out).length() < 1e-4, "{into:?} vs {out:?}");
+        }
+    }
+
+    #[test]
+    fn waypoint_tangents_are_flow_aligned() {
+        // Flow along +x: the handles at each waypoint stay horizontal, so the
+        // curve runs parallel to the corridor through the node band.
+        let a = (egui::pos2(0.0, 0.0), egui::vec2(1.0, 0.0));
+        let b = (egui::pos2(300.0, 0.0), egui::vec2(-1.0, 0.0));
+        let waypoints = [egui::pos2(150.0, 100.0)];
+        let path = Path::from_edge_points_via(a, &waypoints, b, 0.5);
+        assert_eq!(path.segments()[0].ctrl2.y, waypoints[0].y);
+        assert_eq!(path.segments()[1].ctrl1.y, waypoints[0].y);
+    }
+
+    #[test]
+    fn degenerate_waypoints_collapse_to_direct_curve() {
+        let a = (egui::pos2(0.0, 0.0), egui::vec2(1.0, 0.0));
+        let b = (egui::pos2(100.0, 0.0), egui::vec2(-1.0, 0.0));
+        // Waypoints coinciding with the endpoints are dropped.
+        let waypoints = [egui::pos2(0.0, 0.0), egui::pos2(100.0, 0.0)];
+        let path = Path::from_edge_points_via(a, &waypoints, b, 0.5);
+        assert_eq!(path.segments().len(), 1);
+        assert!(path
+            .flatten(5.0)
+            .all(|p| p.x.is_finite() && p.y.is_finite()));
+    }
 }

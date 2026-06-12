@@ -16,6 +16,7 @@ use std::ops;
 /// [`Edge::hovered_stroke`] and [`Edge::stroke`].
 pub struct Edge<'a> {
     edge: ((NodeId, OutputIx), (NodeId, InputIx)),
+    waypoints: &'a [egui::Pos2],
     distance_per_point: f32,
     curvature: f32,
     stroke: Option<egui::Stroke>,
@@ -49,6 +50,7 @@ impl<'a> Edge<'a> {
     pub fn new(a: (NodeId, OutputIx), b: (NodeId, InputIx), selected: &'a mut bool) -> Self {
         Self {
             edge: (a, b),
+            waypoints: &[],
             distance_per_point: Self::DEFAULT_DISTANCE_PER_POINT,
             curvature: bezier::Cubic::DEFAULT_CURVATURE,
             stroke: None,
@@ -56,6 +58,20 @@ impl<'a> Edge<'a> {
             selected_stroke: None,
             selected,
         }
+    }
+
+    /// Thread the edge's curve through the given intermediate waypoints,
+    /// ordered from the output socket toward the input socket.
+    ///
+    /// Use this with the corridor routes produced by the automatic layout
+    /// (`EdgeRoutes`, from `layout_routed`) to keep long edges from passing
+    /// over unrelated nodes. Waypoints share the node layout's coordinate
+    /// space.
+    ///
+    /// Default: none (a single curve directly between the sockets).
+    pub fn waypoints(mut self, waypoints: &'a [egui::Pos2]) -> Self {
+        self.waypoints = waypoints;
+        self
     }
 
     /// The distance-per-point used to render the bezier curve path.
@@ -112,6 +128,7 @@ impl<'a> Edge<'a> {
     pub fn show(self, ectx: &mut EdgesCtx, ui: &mut egui::Ui) -> EdgeResponse {
         let Self {
             edge: ((a, output), (b, input)),
+            waypoints,
             distance_per_point,
             curvature,
             stroke,
@@ -138,7 +155,7 @@ impl<'a> Edge<'a> {
         };
 
         // TODO: Cache the curve and its points?
-        let bezier = bezier::Cubic::from_edge_points(a_out, b_in, curvature);
+        let path = bezier::Path::from_edge_points_via(a_out, waypoints, b_in, curvature);
 
         // Get the mouse position for computing the closest point on the edge.
         let ui_response = ui.response();
@@ -146,7 +163,7 @@ impl<'a> Edge<'a> {
             .interact_pointer_pos()
             .or(ui_response.hover_pos())
             .unwrap_or_default();
-        let closest_point = bezier.closest_point(distance_per_point, mouse_pos);
+        let closest_point = path.closest_point(distance_per_point, mouse_pos);
 
         // Create a per-edge response for interaction and context menu support.
         // The interact area follows the mouse along the edge curve.
@@ -167,7 +184,7 @@ impl<'a> Edge<'a> {
         // Check if the edge intersects the selection rectangle.
         let under_selection_rect = ectx
             .selection_rect
-            .map(|rect| bezier.intersects_rect(distance_per_point, rect))
+            .map(|rect| path.intersects_rect(distance_per_point, rect))
             .unwrap_or(false);
 
         // Handle selection state changes.
@@ -205,7 +222,7 @@ impl<'a> Edge<'a> {
             && ui.input(|i| !i.pointer.primary_down() || i.pointer.could_any_button_be_click());
 
         // Paint the edge.
-        let pts: Vec<_> = bezier.flatten(distance_per_point).collect();
+        let pts: Vec<_> = path.flatten(distance_per_point).collect();
         let stroke = if *selected {
             selected_stroke.unwrap_or(ui.style().visuals.selection.stroke)
         } else if show_hover || (under_selection_rect && ui.input(|i| i.modifiers.shift)) {
