@@ -141,6 +141,20 @@ view.layout = positions;
 For graphs without socket information, `layout_from_sizes` accepts plain
 `(NodeId, size)` nodes and `(NodeId, NodeId)` edges.
 
+To keep long edges from passing over unrelated nodes, use `layout_routed`,
+which additionally returns corridor waypoints for the edges that need them,
+and thread each edge through its route when drawing:
+
+```rust
+let (positions, routes) = layout_routed(nodes, edges, params);
+view.layout = positions;
+// ... when drawing each edge:
+let waypoints = routes.route((src, out_ix), (dst, in_ix), 0).unwrap_or(&[]);
+Edge::new((src, out_ix), (dst, in_ix), &mut selected)
+    .waypoints(waypoints)
+    .show(ctx, ui);
+```
+
 ## Controls
 
 ### Mouse Controls
