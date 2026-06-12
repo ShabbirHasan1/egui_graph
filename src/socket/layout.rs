@@ -178,7 +178,12 @@ pub(crate) fn evenly_spaced_cross_offsets(
 
 /// The position of a socket on the node's main-axis edge given its absolute
 /// cross-axis coordinate.
-fn socket_pos(flow: egui::Direction, rect: egui::Rect, is_input: bool, cross: f32) -> egui::Pos2 {
+pub(crate) fn socket_pos(
+    flow: egui::Direction,
+    rect: egui::Rect,
+    is_input: bool,
+    cross: f32,
+) -> egui::Pos2 {
     match flow {
         egui::Direction::LeftToRight => {
             let x = if is_input { rect.min.x } else { rect.max.x };

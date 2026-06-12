@@ -39,6 +39,16 @@ pub struct LayoutParams {
     pub component_gap: f32,
 }
 
+/// Corridor waypoints for edges, produced by [`layout_routed`].
+///
+/// A route exists only for an edge that spans multiple layers *and* whose
+/// direct socket-to-socket curve could overlap a node; all other edges look
+/// best as plain curves.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EdgeRoutes {
+    routes: HashMap<((NodeId, OutputIx), (NodeId, InputIx)), Vec<Vec<egui::Pos2>>>,
+}
+
 /// Socket positions along a node's edge, mirroring
 /// [`SocketLayout`](crate::SocketLayout).
 enum LayoutSockets {
@@ -76,6 +86,19 @@ struct Bounds {
     max_main: f32,
     min_cross: f32,
     max_cross: f32,
+}
+
+/// A laid-out component, in canonical space.
+struct Placed {
+    /// Global node indices of the component's members.
+    members: Vec<usize>,
+    /// The `(main, cross)` centre of each member.
+    centers: Vec<(f32, f32)>,
+    /// Corridor waypoints of each component edge.
+    routes: Vec<Vec<(f32, f32)>>,
+    /// The global edge index of each component edge.
+    edge_ixs: Vec<usize>,
+    bounds: Bounds,
 }
 
 impl LayoutNode {
@@ -168,6 +191,38 @@ impl LayoutParams {
     }
 }
 
+impl EdgeRoutes {
+    /// The corridor waypoints for the given edge, ordered from the output
+    /// socket toward the input socket, in the same coordinate space as the
+    /// accompanying [`Layout`].
+    ///
+    /// `occurrence` distinguishes multiple edges connecting the same pair of
+    /// sockets; pass `0` for the first (or only) such edge.
+    ///
+    /// Returns `None` when the edge needs no routing or is unknown.
+    pub fn route(
+        &self,
+        a: (NodeId, OutputIx),
+        b: (NodeId, InputIx),
+        occurrence: usize,
+    ) -> Option<&[egui::Pos2]> {
+        self.routes
+            .get(&(a, b))
+            .and_then(|routes| routes.get(occurrence))
+            .map(Vec::as_slice)
+    }
+
+    /// The number of routed edges.
+    pub fn len(&self) -> usize {
+        self.routes.values().map(Vec::len).sum()
+    }
+
+    /// Whether no edges required routing.
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+}
+
 impl Bounds {
     fn main_extent(&self) -> f32 {
         self.max_main - self.min_main
@@ -201,6 +256,21 @@ pub fn layout(
     edges: impl IntoIterator<Item = ((NodeId, OutputIx), (NodeId, InputIx))>,
     params: impl Into<LayoutParams>,
 ) -> Layout {
+    layout_routed(nodes, edges, params).0
+}
+
+/// Like [`layout`], but also returns corridor waypoints for the edges that
+/// span multiple layers and whose direct curves could otherwise overlap
+/// nodes.
+///
+/// Pass each edge's route to [`Edge::waypoints`](crate::edge::Edge::waypoints)
+/// to thread its curve through the corridors reserved by the layout. Routes
+/// share the returned [`Layout`]'s coordinate space.
+pub fn layout_routed(
+    nodes: impl IntoIterator<Item = (NodeId, LayoutNode)>,
+    edges: impl IntoIterator<Item = ((NodeId, OutputIx), (NodeId, InputIx))>,
+    params: impl Into<LayoutParams>,
+) -> (Layout, EdgeRoutes) {
     let params = params.into();
     let horizontal = matches!(
         params.flow,
@@ -262,84 +332,127 @@ pub fn layout(
         local_of[v] = members.len();
         members.push(v);
     }
-    let mut edges_by_root: BTreeMap<usize, Vec<CEdge>> = BTreeMap::new();
-    for e in cedges {
-        let root = uf_find(&mut parent, e.src);
-        edges_by_root.entry(root).or_default().push(CEdge {
-            src: local_of[e.src],
-            src_socket: e.src_socket,
-            dst: local_of[e.dst],
-            dst_socket: e.dst_socket,
+    let mut edges_by_root: BTreeMap<usize, (Vec<CEdge>, Vec<usize>)> = BTreeMap::new();
+    for (e, edge) in cedges.iter().enumerate() {
+        let root = uf_find(&mut parent, edge.src);
+        let (local, edge_ixs) = edges_by_root.entry(root).or_default();
+        local.push(CEdge {
+            src: local_of[edge.src],
+            src_socket: edge.src_socket,
+            dst: local_of[edge.dst],
+            dst_socket: edge.dst_socket,
         });
+        edge_ixs.push(e);
     }
 
     // Lay out each component independently in canonical space.
-    let mut placed: Vec<(Vec<usize>, Vec<(f32, f32)>, Bounds)> = members_by_root
+    let mut placed: Vec<Placed> = members_by_root
         .into_iter()
         .map(|(root, members)| {
+            let (edges, edge_ixs) = edges_by_root.remove(&root).unwrap_or_default();
             let cg = CGraph {
                 size_main: members.iter().map(|&v| size_main[v]).collect(),
                 size_cross: members.iter().map(|&v| size_cross[v]).collect(),
-                in_anchors: members
-                    .iter()
-                    .map(|&v| std::mem::take(&mut in_anchors[v]))
-                    .collect(),
-                out_anchors: members
-                    .iter()
-                    .map(|&v| std::mem::take(&mut out_anchors[v]))
-                    .collect(),
-                edges: edges_by_root.remove(&root).unwrap_or_default(),
+                in_anchors: members.iter().map(|&v| in_anchors[v].clone()).collect(),
+                out_anchors: members.iter().map(|&v| out_anchors[v].clone()).collect(),
+                edges,
             };
-            let (centers, bounds) = layout_connected(&cg, &params);
-            (members, centers, bounds)
+            let (centers, routes, bounds) = layout_connected(&cg, &params);
+            Placed {
+                members,
+                centers,
+                routes,
+                edge_ixs,
+                bounds,
+            }
         })
         .collect();
 
     // Stack the components along the cross axis, largest first.
     placed.sort_by(|a, b| {
-        b.2.main_extent()
-            .total_cmp(&a.2.main_extent())
-            .then(b.2.cross_extent().total_cmp(&a.2.cross_extent()))
-            .then(a.0[0].cmp(&b.0[0]))
+        b.bounds
+            .main_extent()
+            .total_cmp(&a.bounds.main_extent())
+            .then(b.bounds.cross_extent().total_cmp(&a.bounds.cross_extent()))
+            .then(a.members[0].cmp(&b.members[0]))
     });
-    let mut tls: Vec<(usize, egui::Pos2)> = Vec::with_capacity(ids.len());
+    let mut tls = vec![egui::Pos2::ZERO; ids.len()];
+    let mut edge_waypoints: Vec<Vec<egui::Pos2>> = vec![Vec::new(); cedges.len()];
     let mut cross_cursor = 0.0;
-    for (members, centers, bounds) in &placed {
-        let main_shift = -bounds.min_main;
-        let cross_shift = cross_cursor - bounds.min_cross;
-        for (&global, &(main, cross)) in members.iter().zip(centers) {
+    for p in &placed {
+        let main_shift = -p.bounds.min_main;
+        let cross_shift = cross_cursor - p.bounds.min_cross;
+        // Map canonical coordinates back to screen space.
+        let to_screen = |(main, cross): (f32, f32)| {
             let main = main + main_shift;
             let cross = cross + cross_shift;
-            // Map canonical coordinates back to screen space.
             let main = match params.flow {
                 egui::Direction::LeftToRight | egui::Direction::TopDown => main,
                 egui::Direction::RightToLeft | egui::Direction::BottomUp => -main,
             };
-            let center = if horizontal {
+            if horizontal {
                 egui::Pos2::new(main, cross)
             } else {
                 egui::Pos2::new(cross, main)
-            };
-            tls.push((global, center - size_screen[global] * 0.5));
+            }
+        };
+        for (&global, &center) in p.members.iter().zip(&p.centers) {
+            tls[global] = to_screen(center) - size_screen[global] * 0.5;
         }
-        cross_cursor += bounds.cross_extent() + params.component_gap;
+        for (&e, route) in p.edge_ixs.iter().zip(&p.routes) {
+            edge_waypoints[e] = route.iter().map(|&wp| to_screen(wp)).collect();
+        }
+        cross_cursor += p.bounds.cross_extent() + params.component_gap;
     }
 
     // Centre the overall bounding box around the origin.
     let mut min = egui::Pos2::new(f32::INFINITY, f32::INFINITY);
     let mut max = egui::Pos2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
-    for &(global, tl) in &tls {
+    for (&tl, &size) in tls.iter().zip(&size_screen) {
         min = min.min(tl);
-        max = max.max(tl + size_screen[global]);
+        max = max.max(tl + size);
     }
     let center_shift = if tls.is_empty() {
         egui::Vec2::ZERO
     } else {
         (min.to_vec2() + max.to_vec2()) * 0.5
     };
-    tls.into_iter()
-        .map(|(global, tl)| (ids[global], tl - center_shift))
-        .collect()
+    for tl in &mut tls {
+        *tl -= center_shift;
+    }
+    for route in &mut edge_waypoints {
+        for wp in route.iter_mut() {
+            *wp -= center_shift;
+        }
+    }
+
+    // Keep only the routes whose edges actually need them.
+    let rects: Vec<egui::Rect> = tls
+        .iter()
+        .zip(&size_screen)
+        .map(|(&tl, &size)| egui::Rect::from_min_size(tl, size))
+        .collect();
+    let mut routes = EdgeRoutes::default();
+    for (edge, waypoints) in cedges.iter().zip(edge_waypoints) {
+        if waypoints.is_empty() {
+            continue;
+        }
+        let a_anchor = anchor(&out_anchors[edge.src], edge.src_socket);
+        let b_anchor = anchor(&in_anchors[edge.dst], edge.dst_socket);
+        let a = anchored_socket_pos(params.flow, rects[edge.src], false, a_anchor);
+        let b = anchored_socket_pos(params.flow, rects[edge.dst], true, b_anchor);
+        if direct_curve_clear(&params, &rects, edge, a, b) {
+            continue;
+        }
+        let key = (
+            (ids[edge.src], edge.src_socket),
+            (ids[edge.dst], edge.dst_socket),
+        );
+        routes.routes.entry(key).or_default().push(waypoints);
+    }
+
+    let layout = ids.iter().copied().zip(tls).collect();
+    (layout, routes)
 }
 
 /// Construct a layout from node sizes alone.
@@ -361,8 +474,13 @@ pub fn layout_from_sizes(
 }
 
 /// Lay out a single weakly-connected component in canonical space, returning
-/// the `(main, cross)` centre of each node and the component bounds.
-fn layout_connected(cg: &CGraph, params: &LayoutParams) -> (Vec<(f32, f32)>, Bounds) {
+/// the `(main, cross)` centre of each node, the corridor waypoints of each
+/// edge (ordered from its output end to its input end), and the component
+/// bounds.
+fn layout_connected(
+    cg: &CGraph,
+    params: &LayoutParams,
+) -> (Vec<(f32, f32)>, Vec<Vec<(f32, f32)>>, Bounds) {
     let n = cg.size_main.len();
     let pairs: Vec<(usize, usize)> = cg.edges.iter().map(|e| (e.src, e.dst)).collect();
     let reversed = acyclic::break_cycles(n, &pairs);
@@ -385,6 +503,21 @@ fn layout_connected(cg: &CGraph, params: &LayoutParams) -> (Vec<(f32, f32)>, Bou
     let main = place::assign_main(&pg, &size_main_all, params.layer_gap);
 
     let centers: Vec<(f32, f32)> = (0..n).map(|v| (main[v], cross[v])).collect();
+    // The dummy chains become corridor waypoints; reversed edges run their
+    // chain from the input end, so flip them to output-to-input order.
+    let routes: Vec<Vec<(f32, f32)>> = pg
+        .edge_dummies
+        .iter()
+        .zip(&reversed)
+        .map(|(dummies, &rev)| {
+            let mut route: Vec<(f32, f32)> = dummies.iter().map(|&d| (main[d], cross[d])).collect();
+            if rev {
+                route.reverse();
+            }
+            route
+        })
+        .collect();
+
     let mut bounds = Bounds {
         min_main: f32::INFINITY,
         max_main: f32::NEG_INFINITY,
@@ -397,7 +530,73 @@ fn layout_connected(cg: &CGraph, params: &LayoutParams) -> (Vec<(f32, f32)>, Bou
         bounds.min_cross = bounds.min_cross.min(cross - cg.size_cross[v] * 0.5);
         bounds.max_cross = bounds.max_cross.max(cross + cg.size_cross[v] * 0.5);
     }
-    (centers, bounds)
+    // Corridors claim space too, keeping them clear of neighbouring
+    // components when packing.
+    let half_corridor = params.node_gap * 0.5;
+    for &(main, cross) in routes.iter().flatten() {
+        bounds.min_main = bounds.min_main.min(main);
+        bounds.max_main = bounds.max_main.max(main);
+        bounds.min_cross = bounds.min_cross.min(cross - half_corridor);
+        bounds.max_cross = bounds.max_cross.max(cross + half_corridor);
+    }
+    (centers, routes, bounds)
+}
+
+/// The anchor offset of `socket` within `anchors`, falling back to the
+/// cross-axis centre for sockets without a known offset.
+fn anchor(anchors: &[f32], socket: usize) -> f32 {
+    anchors.get(socket).copied().unwrap_or(0.0)
+}
+
+/// The screen-space position of a node's socket given its final rect and the
+/// socket's cross-axis anchor offset from the node centre.
+fn anchored_socket_pos(
+    flow: egui::Direction,
+    rect: egui::Rect,
+    is_input: bool,
+    anchor: f32,
+) -> egui::Pos2 {
+    let cross_center = match flow {
+        egui::Direction::LeftToRight | egui::Direction::RightToLeft => rect.center().y,
+        egui::Direction::TopDown | egui::Direction::BottomUp => rect.center().x,
+    };
+    crate::socket::layout::socket_pos(flow, rect, is_input, cross_center + anchor)
+}
+
+/// The screen-space unit vector along the flow direction.
+fn flow_vec(flow: egui::Direction) -> egui::Vec2 {
+    match flow {
+        egui::Direction::LeftToRight => egui::Vec2::new(1.0, 0.0),
+        egui::Direction::RightToLeft => egui::Vec2::new(-1.0, 0.0),
+        egui::Direction::TopDown => egui::Vec2::new(0.0, 1.0),
+        egui::Direction::BottomUp => egui::Vec2::new(0.0, -1.0),
+    }
+}
+
+/// Whether the direct socket-to-socket curve between `a` and `b` is
+/// guaranteed to clear every node other than `edge`'s own endpoints, making
+/// a corridor route unnecessary.
+///
+/// The direct cubic's control points extend from the sockets along their
+/// normals by at most half the socket distance, so the curve is bounded by
+/// the hull of the sockets and the strongest possible control points.
+fn direct_curve_clear(
+    params: &LayoutParams,
+    rects: &[egui::Rect],
+    edge: &CEdge,
+    a: egui::Pos2,
+    b: egui::Pos2,
+) -> bool {
+    let flow = flow_vec(params.flow);
+    let ctrl_len = a.distance(b) * crate::bezier::Cubic::MAX_CURVATURE_FACTOR;
+    let mut hull = egui::Rect::from_two_pos(a, b);
+    hull.extend_with(a + flow * ctrl_len);
+    hull.extend_with(b - flow * ctrl_len);
+    let clearance = params.node_gap * 0.25;
+    rects
+        .iter()
+        .enumerate()
+        .all(|(n, rect)| n == edge.src || n == edge.dst || !hull.intersects(rect.expand(clearance)))
 }
 
 /// Cross-axis socket anchor offsets relative to the node's centre.
@@ -650,6 +849,138 @@ mod tests {
         ];
         let l = layout(nodes, Vec::new(), egui::Direction::LeftToRight);
         assert_eq!(l[&nid(0)], egui::Pos2::new(-50.0, -25.0));
+    }
+
+    #[test]
+    fn short_edges_have_no_routes() {
+        let (_, routes) = layout_routed(
+            simple_nodes(3, [100.0, 50.0]),
+            vec![((nid(0), 0), (nid(1), 0)), ((nid(1), 0), (nid(2), 0))],
+            egui::Direction::LeftToRight,
+        );
+        assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn long_edge_threads_reserved_corridor() {
+        // A -> B -> C chain plus a long A -> C edge whose direct curve would
+        // pass through the tall B.
+        let sizes = [[100.0, 100.0], [100.0, 300.0], [100.0, 100.0]];
+        let nodes = vec![
+            (nid(0), LayoutNode::new(sizes[0]).inputs(1).outputs(2)),
+            (nid(1), LayoutNode::new(sizes[1]).inputs(1).outputs(1)),
+            (nid(2), LayoutNode::new(sizes[2]).inputs(2).outputs(1)),
+        ];
+        let edges = vec![
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(0), 1), (nid(2), 1)),
+        ];
+        let (l, routes) = layout_routed(nodes, edges, egui::Direction::LeftToRight);
+        assert_eq!(routes.len(), 1);
+        let route = routes.route((nid(0), 1), (nid(2), 1), 0).expect("a route");
+        assert_eq!(route.len(), 1);
+        // The waypoint sits in B's layer, clear of every node.
+        for (v, &size) in sizes.iter().enumerate() {
+            let rect = egui::Rect::from_min_size(l[&nid(v as u64)], size.into());
+            assert!(!rect.contains(route[0]), "waypoint inside node {v}");
+        }
+        assert!(route[0].x > l[&nid(0)].x + sizes[0][0]);
+        assert!(route[0].x < l[&nid(2)].x);
+    }
+
+    #[test]
+    fn clear_long_edge_keeps_direct_curve() {
+        // The chain hangs from the top sockets of the tall A and C, leaving
+        // the direct A -> C curve along their bottom sockets well clear of
+        // the tiny B.
+        let nodes = vec![
+            (
+                nid(0),
+                LayoutNode::new([100.0, 400.0])
+                    .inputs(0)
+                    .output_offsets(vec![10.0, 390.0]),
+            ),
+            (nid(1), LayoutNode::new([100.0, 20.0]).inputs(1).outputs(1)),
+            (
+                nid(2),
+                LayoutNode::new([100.0, 400.0])
+                    .input_offsets(vec![10.0, 390.0])
+                    .outputs(0),
+            ),
+        ];
+        let edges = vec![
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(0), 1), (nid(2), 1)),
+        ];
+        let (_, routes) = layout_routed(nodes, edges, egui::Direction::LeftToRight);
+        assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn feedback_route_runs_output_to_input() {
+        // 0 -> 1 -> 2 -> 3 with a feedback edge 3 -> 0 spanning three layers.
+        let nodes = simple_nodes(4, [100.0, 50.0]);
+        let edges = vec![
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(2), 0), (nid(3), 0)),
+            ((nid(3), 0), (nid(0), 0)),
+        ];
+        let (_, routes) = layout_routed(nodes, edges, egui::Direction::LeftToRight);
+        let route = routes.route((nid(3), 0), (nid(0), 0), 0).expect("a route");
+        assert_eq!(route.len(), 2);
+        // Waypoints run from `3`'s output back toward `0`'s input.
+        assert!(route[0].x > route[1].x);
+    }
+
+    #[test]
+    fn multi_edges_route_per_occurrence() {
+        let nodes = vec![
+            (nid(0), LayoutNode::new([100.0, 100.0]).inputs(1).outputs(2)),
+            (nid(1), LayoutNode::new([100.0, 300.0]).inputs(1).outputs(1)),
+            (nid(2), LayoutNode::new([100.0, 100.0]).inputs(2).outputs(1)),
+        ];
+        // Tripled chain edges pin the socket alignment to B so the duplicated
+        // long edges stay blocked by it (a lone duplicate pair would win the
+        // placement median, align with its corridor, and need no route).
+        let edges = vec![
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(0), 1), (nid(2), 1)),
+            ((nid(0), 1), (nid(2), 1)),
+        ];
+        let (_, routes) = layout_routed(nodes, edges, egui::Direction::LeftToRight);
+        assert_eq!(routes.len(), 2);
+        assert!(routes.route((nid(0), 1), (nid(2), 1), 0).is_some());
+        assert!(routes.route((nid(0), 1), (nid(2), 1), 1).is_some());
+        assert!(routes.route((nid(0), 1), (nid(2), 1), 2).is_none());
+    }
+
+    #[test]
+    fn routes_are_deterministic() {
+        let nodes = || {
+            vec![
+                (nid(0), LayoutNode::new([100.0, 100.0]).inputs(1).outputs(2)),
+                (nid(1), LayoutNode::new([100.0, 300.0]).inputs(1).outputs(1)),
+                (nid(2), LayoutNode::new([100.0, 100.0]).inputs(2).outputs(1)),
+            ]
+        };
+        let edges = || {
+            vec![
+                ((nid(0), 0), (nid(1), 0)),
+                ((nid(1), 0), (nid(2), 0)),
+                ((nid(0), 1), (nid(2), 1)),
+            ]
+        };
+        let a = layout_routed(nodes(), edges(), egui::Direction::TopDown);
+        let b = layout_routed(nodes(), edges(), egui::Direction::TopDown);
+        assert_eq!(a, b);
     }
 
     /// Minimal xorshift PRNG, avoiding a dev-dependency.

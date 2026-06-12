@@ -5,7 +5,7 @@
 //! barycenters and crossing counts are computed per socket connection point
 //! ("port") rather than per node centre, making the ordering socket-aware.
 
-use super::CGraph;
+use super::{anchor, CGraph};
 
 /// A proper layered graph: every segment spans exactly one layer gap.
 ///
@@ -24,6 +24,9 @@ pub(super) struct ProperGraph {
     pub(super) back: Vec<Vec<usize>>,
     /// Per-vertex segments connecting to the next layer.
     pub(super) fwd: Vec<Vec<usize>>,
+    /// Per input edge, the chain of dummy vertices created for it, ordered
+    /// from the earlier to the later layer.
+    pub(super) edge_dummies: Vec<Vec<usize>>,
 }
 
 /// A piece of an edge spanning one layer gap, from `src` to `dst` in the
@@ -77,6 +80,7 @@ pub(super) fn build_proper(cg: &CGraph, reversed: &[bool], layer: &[usize]) -> P
     let num_layers = layer.iter().map(|&l| l + 1).max().unwrap_or(0);
     let mut layer_of = layer.to_vec();
     let mut segments = Vec::new();
+    let mut edge_dummies = Vec::with_capacity(cg.edges.len());
     // The socket-derived key of each segment endpoint, for resolving port
     // ranks once all segments exist. `None` for dummy endpoints.
     let mut endpoint_keys: Vec<(Option<PortKey>, Option<PortKey>)> = Vec::new();
@@ -100,14 +104,17 @@ pub(super) fn build_proper(cg: &CGraph, reversed: &[bool], layer: &[usize]) -> P
             ((edge.src, out_key), (edge.dst, in_key))
         };
         debug_assert!(layer_of[a] < layer_of[b]);
+        let mut dummies = Vec::new();
         let mut prev = (a, Some(a_key));
         for l in layer_of[a] + 1..layer_of[b] {
             let dummy = layer_of.len();
             layer_of.push(l);
+            dummies.push(dummy);
             push_segment(&mut segments, &mut endpoint_keys, prev, (dummy, None));
             prev = (dummy, None);
         }
         push_segment(&mut segments, &mut endpoint_keys, prev, (b, Some(b_key)));
+        edge_dummies.push(dummies);
     }
 
     // Resolve port ranks from the distinct keys per vertex and direction.
@@ -179,6 +186,7 @@ pub(super) fn build_proper(cg: &CGraph, reversed: &[bool], layer: &[usize]) -> P
         segments,
         back,
         fwd,
+        edge_dummies,
     }
 }
 
@@ -214,12 +222,6 @@ pub(super) fn minimize_crossings(g: &mut ProperGraph) {
             g.pos[v] = i;
         }
     }
-}
-
-/// The anchor offset of `socket` within `anchors`, falling back to the
-/// cross-axis centre for sockets without a known offset.
-fn anchor(anchors: &[f32], socket: usize) -> f32 {
-    anchors.get(socket).copied().unwrap_or(0.0)
 }
 
 fn push_segment(
@@ -367,6 +369,8 @@ mod tests {
         // The two-layer edge gains one dummy vertex and splits in two.
         assert_eq!(g.pos.len(), 4);
         assert_eq!(g.segments.len(), 4);
+        // The dummy chain is recorded against its edge.
+        assert_eq!(g.edge_dummies, vec![vec![], vec![], vec![3]]);
     }
 
     #[test]
