@@ -22,6 +22,8 @@ pub struct Graph {
     zoom_range: egui::Rangef,
     max_inner_size: Option<egui::Vec2>,
     center_view: bool,
+    /// How the view responds when the available viewport size changes.
+    resize_behavior: ResizeBehavior,
     id: egui::Id,
     /// If set, overwrite the graph's selected nodes at the start of the frame.
     selected_nodes: Option<HashSet<NodeId>>,
@@ -33,6 +35,22 @@ pub struct Graph {
     /// structural changes - node positions, edges, and node content remain
     /// view-only while navigation and selection continue to work.
     immutable: bool,
+}
+
+/// How the view responds when the available viewport size changes
+/// (e.g. a pane or window resize).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub enum ResizeBehavior {
+    /// Preserve the zoom level (pixels-per-world-unit), revealing more or less
+    /// of the scene as the viewport grows or shrinks. This is the default.
+    MaintainZoom,
+    /// Preserve the visible region of the scene, letting egui's [`Scene`] refit
+    /// it into the new viewport size. This changes the apparent zoom and
+    /// matches the behaviour prior to [`ResizeBehavior::MaintainZoom`].
+    ///
+    /// [`Scene`]: egui::containers::Scene
+    MaintainView,
 }
 
 /// State related to the graph UI.
@@ -57,6 +75,11 @@ pub struct GraphTempMemory {
     ///
     /// Always `Some` while the pointer is over the graph area, `None` otherwise.
     closest_socket: Option<socket::Socket>,
+    /// The most recently observed available viewport size.
+    ///
+    /// Used to preserve the zoom level across viewport resizes; see
+    /// [`ResizeBehavior::MaintainZoom`].
+    last_viewport_size: Option<egui::Vec2>,
 }
 
 type NodeSizes = HashMap<NodeId, egui::Vec2>;
@@ -217,6 +240,8 @@ impl Graph {
         max: 1.0,
     };
     pub const DEFAULT_CENTER_VIEW: bool = false;
+    /// The default [`ResizeBehavior`].
+    pub const DEFAULT_RESIZE_BEHAVIOR: ResizeBehavior = ResizeBehavior::MaintainZoom;
 
     /// Begin building the new graph widget.
     pub fn new(id_src: impl Hash) -> Self {
@@ -231,6 +256,7 @@ impl Graph {
             zoom_range: Self::DEFAULT_ZOOM_RANGE,
             max_inner_size: None,
             center_view: Self::DEFAULT_CENTER_VIEW,
+            resize_behavior: Self::DEFAULT_RESIZE_BEHAVIOR,
             id,
             selected_nodes: None,
             immutable: false,
@@ -274,6 +300,15 @@ impl Graph {
         self
     }
 
+    /// How the view responds when the available viewport size changes
+    /// (e.g. a pane or window resize).
+    ///
+    /// Default: [`Self::DEFAULT_RESIZE_BEHAVIOR`].
+    pub fn resize_behavior(mut self, behavior: ResizeBehavior) -> Self {
+        self.resize_behavior = behavior;
+        self
+    }
+
     /// Set the selected nodes for this frame.
     ///
     /// This overwrites the current selection in the graph's temporary memory
@@ -312,6 +347,27 @@ impl Graph {
             ref mut scene_rect,
             ref mut layout,
         } = *view;
+
+        // Preserve the zoom level across viewport resizes (see
+        // `ResizeBehavior::MaintainZoom`). egui's `Scene` treats `scene_rect`
+        // as the visible region and refits it into the available size every
+        // frame, so without this a resize changes the apparent zoom. We rescale
+        // `scene_rect` so the next fit reproduces the previous scale.
+        let viewport_size = graph_rect.size();
+        {
+            let gmem_arc = memory(ui, self.id);
+            let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
+            // Skip when `center_view` is set: `scene_rect` is overwritten after
+            // the scene is shown, so any value here would be clobbered.
+            if self.resize_behavior == ResizeBehavior::MaintainZoom && !self.center_view {
+                if let Some(prev) = gmem.last_viewport_size {
+                    *scene_rect =
+                        maintain_zoom_scene_rect(*scene_rect, prev, viewport_size, self.zoom_range);
+                }
+            }
+            // Record unconditionally so toggling `center_view`/behaviour works.
+            gmem.last_viewport_size = Some(viewport_size);
+        }
 
         // Create the Scene.
         let mut scene = egui::containers::Scene::new()
@@ -980,10 +1036,102 @@ pub fn is_node_selected(ui: &egui::Ui, graph_id: egui::Id, node_id: NodeId) -> b
     gmem.selection.nodes.contains(&node_id)
 }
 
+/// Rescale `scene_rect` so that egui's [`Scene`] reproduces the previous
+/// effective scale (pixels-per-world-unit) at the new viewport size, holding
+/// the scene center fixed.
+///
+/// Returns `scene_rect` unchanged when the size did not change or the inputs
+/// are degenerate. See [`ResizeBehavior::MaintainZoom`].
+///
+/// [`Scene`]: egui::containers::Scene
+fn maintain_zoom_scene_rect(
+    scene_rect: egui::Rect,
+    prev: egui::Vec2,
+    cur: egui::Vec2,
+    zoom_range: egui::Rangef,
+) -> egui::Rect {
+    let size = scene_rect.size();
+    if prev == cur || !scene_rect.is_finite() || size.x <= 0.0 || size.y <= 0.0 {
+        return scene_rect;
+    }
+    // The scale egui used last frame is set by the binding (letterbox) axis,
+    // i.e. the smaller ratio, clamped to the same range egui will enforce.
+    let scale = zoom_range.clamp((prev / size).min_elem());
+    if !scale.is_finite() || scale <= 0.0 {
+        return scene_rect;
+    }
+    // Using the same scalar on both axes makes `scene_rect` adopt the viewport
+    // aspect ratio - the steady-state shape egui itself produces - while
+    // keeping the center fixed. Next frame egui's fit yields `scale` again.
+    egui::Rect::from_center_size(scene_rect.center(), cur / scale)
+}
+
 /// Short-hand for retrieving access to the graph's temporary memory from the `Ui`.
 fn memory(ui: &egui::Ui, graph_id: egui::Id) -> Arc<Mutex<GraphTempMemory>> {
     ui.ctx().data_mut(|d| {
         d.get_temp_mut_or_default::<Arc<Mutex<GraphTempMemory>>>(graph_id)
             .clone()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::maintain_zoom_scene_rect;
+    use egui::{Rangef, Rect, Vec2};
+
+    /// The scale egui's `Scene` would apply when fitting `scene_rect` into a
+    /// viewport of `size` (the binding/letterbox axis).
+    fn fit_scale(size: Vec2, scene_rect: Rect) -> f32 {
+        (size / scene_rect.size()).min_elem()
+    }
+
+    #[test]
+    fn preserves_scale_and_center_on_resize() {
+        let unbounded = Rangef::new(0.0, f32::INFINITY);
+        let scene = Rect::from_center_size(egui::pos2(10.0, 20.0), egui::vec2(100.0, 80.0));
+        let prev = egui::vec2(300.0, 240.0); // scale = 3.0 on both axes
+        let cur = egui::vec2(600.0, 240.0);
+
+        let scale_before = fit_scale(prev, scene);
+        let out = maintain_zoom_scene_rect(scene, prev, cur, unbounded);
+
+        assert!((fit_scale(cur, out) - scale_before).abs() < 1e-4);
+        assert!((out.center() - scene.center()).length() < 1e-4);
+    }
+
+    #[test]
+    fn noop_when_size_unchanged() {
+        let r = Rangef::new(0.0, f32::INFINITY);
+        let scene = Rect::from_center_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
+        let size = egui::vec2(200.0, 200.0);
+        assert_eq!(maintain_zoom_scene_rect(scene, size, size, r), scene);
+    }
+
+    #[test]
+    fn noop_on_degenerate_scene_rect() {
+        let r = Rangef::new(0.0, f32::INFINITY);
+        let prev = egui::vec2(200.0, 200.0);
+        let cur = egui::vec2(400.0, 200.0);
+        // Zero area on one axis.
+        let zero = Rect::from_center_size(egui::Pos2::ZERO, egui::vec2(0.0, 100.0));
+        assert_eq!(maintain_zoom_scene_rect(zero, prev, cur, r), zero);
+        // Non-finite: returned unchanged. NaN can't be compared with `==`, so
+        // assert the degenerate input was passed straight through.
+        let nan = Rect::from_center_size(egui::Pos2::ZERO, egui::vec2(f32::NAN, 100.0));
+        let out = maintain_zoom_scene_rect(nan, prev, cur, r);
+        assert!(out.min.x.is_nan() && out.max.x.is_nan());
+        assert_eq!(out.min.y, nan.min.y);
+        assert_eq!(out.max.y, nan.max.y);
+    }
+
+    #[test]
+    fn clamps_to_zoom_range() {
+        let range = Rangef::new(0.25, 1.0);
+        let scene = Rect::from_center_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
+        let prev = egui::vec2(10.0, 10.0); // raw scale 0.1, below min -> clamps to 0.25
+        let cur = egui::vec2(200.0, 200.0);
+        let out = maintain_zoom_scene_rect(scene, prev, cur, range);
+        // Reproduced scale should match the clamped value.
+        assert!((fit_scale(cur, out) - 0.25).abs() < 1e-4);
+    }
 }
