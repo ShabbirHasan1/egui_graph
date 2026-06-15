@@ -3,10 +3,12 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "layout")]
-pub use layout::layout;
+pub use layout::{
+    layout, layout_from_sizes, layout_routed, route_edges, EdgeRoutes, LayoutNode, LayoutParams,
+};
 pub use node::{FramedResponse, NodeCtx, NodeId, NodeInteraction};
 pub use socket::layout::{grid::SocketGrid, SocketLayout};
-pub use socket::{SocketKind, SocketResponses};
+pub use socket::{socket_padding, SocketKind, SocketResponses};
 
 pub mod bezier;
 pub mod edge;
@@ -528,6 +530,15 @@ impl GraphTempMemory {
     pub fn node_sizes(&self) -> &NodeSizes {
         &self.node_sizes
     }
+
+    /// The most recently resolved socket positions for each node.
+    ///
+    /// Useful for deriving exact node-relative socket offsets (e.g. for
+    /// `LayoutNode::input_offsets`) when nodes position their sockets
+    /// explicitly.
+    pub fn node_sockets(&self) -> &HashMap<NodeId, NodeSockets> {
+        &self.sockets
+    }
 }
 
 impl NodeSockets {
@@ -970,18 +981,33 @@ fn graph_interaction(
 
 // Paint a subtle dot grid to check camera movement.
 fn paint_dot_grid(visible_rect: egui::Rect, ui: &mut egui::Ui) {
-    let dot_step = ui.spacing().interact_size.y;
-    let vis = ui.style().noninteractive();
+    let dot_step = dot_grid_step(ui.spacing().interact_size.y, visible_rect);
+    let color = ui.style().noninteractive().bg_stroke.color;
     let x_dots = (visible_rect.min.x / dot_step) as i32..=(visible_rect.max.x / dot_step) as i32;
     let y_dots = (visible_rect.min.y / dot_step) as i32..=(visible_rect.max.y / dot_step) as i32;
     for x_dot in x_dots {
         for y_dot in y_dots.clone() {
             let x = x_dot as f32 * dot_step;
             let y = y_dot as f32 * dot_step;
-            let r = egui::Rect::from_center_size([x, y].into(), [1.0; 2].into());
-            let color = vis.bg_stroke.color;
-            ui.painter().circle_filled(r.center(), 0.5, color);
+            ui.painter().circle_filled([x, y].into(), 0.5, color);
         }
+    }
+}
+
+/// The dot grid step, doubled as needed from `base_step` to bound the number
+/// of dots covering `visible_rect`.
+///
+/// Without a bound the per-frame cost grows with the visible scene area
+/// (e.g. when zoomed out on a large window). Power-of-two multiples keep
+/// coarser grids aligned with finer ones as the zoom changes.
+fn dot_grid_step(base_step: f32, visible_rect: egui::Rect) -> f32 {
+    /// The maximum number of dots painted per frame.
+    const MAX_DOTS: f32 = 16_384.0;
+    let dots = (visible_rect.width() / base_step) * (visible_rect.height() / base_step);
+    if dots > MAX_DOTS {
+        base_step * 2f32.powi((dots / MAX_DOTS).sqrt().log2().ceil() as i32)
+    } else {
+        base_step
     }
 }
 
@@ -1076,7 +1102,7 @@ fn memory(ui: &egui::Ui, graph_id: egui::Id) -> Arc<Mutex<GraphTempMemory>> {
 
 #[cfg(test)]
 mod tests {
-    use super::maintain_zoom_scene_rect;
+    use super::{dot_grid_step, maintain_zoom_scene_rect};
     use egui::{Rangef, Rect, Vec2};
 
     /// The scale egui's `Scene` would apply when fitting `scene_rect` into a
@@ -1133,5 +1159,31 @@ mod tests {
         let out = maintain_zoom_scene_rect(scene, prev, cur, range);
         // Reproduced scale should match the clamped value.
         assert!((fit_scale(cur, out) - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn dot_grid_step_bounds_dot_count() {
+        let base = 18.0;
+        // Typical visible areas keep the base step.
+        let small = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0));
+        assert_eq!(dot_grid_step(base, small), base);
+        // Larger areas coarsen the grid to bound the count, in power-of-two
+        // multiples so the grids stay aligned across zoom levels.
+        for scale in [4.0_f32, 16.0, 256.0, 1e6] {
+            let size = egui::vec2(3000.0 * scale, 1600.0 * scale);
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let step = dot_grid_step(base, rect);
+            let dots = (rect.width() / step) * (rect.height() / step);
+            assert!(dots <= 16_384.0, "{dots} dots at scale {scale}");
+            let multiple = step / base;
+            assert_eq!(
+                multiple.log2().fract(),
+                0.0,
+                "{multiple} not a power of two"
+            );
+        }
+        // Degenerate rects stay harmless.
+        let inf = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(f32::INFINITY, 100.0));
+        assert!(dot_grid_step(base, inf) > 0.0);
     }
 }

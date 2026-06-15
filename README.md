@@ -24,7 +24,7 @@ or any other representation.
 - **Interactive Nodes**: Drag, select, and delete nodes with intuitive controls
 - **Edge Creation**: Connect nodes via input/output sockets with bezier curve edges
 - **Multi-Selection**: Rectangle selection and Ctrl+click for selecting multiple nodes
-- **Automatic Layout**: Optional graph layout using the `layout-rs` crate
+- **Automatic Layout**: Optional socket-aware layered graph layout
 - **Customizable**: Configure node flow direction, socket/frame appearance, and more
 - **Zoom & Pan**: Navigate large graphs with mouse controls
 - **Model-Agnostic**: No prescribed graph data structure - use whatever fits your needs
@@ -116,17 +116,43 @@ Edge::new(
 
 ### Automatic Layout
 
-With the `layout` feature enabled:
+With the `layout` feature enabled, a built-in socket-aware layered layout
+orders and positions nodes to minimise edge crossings and keep edges straight,
+taking the socket each edge connects to into account:
 
 ```rust
-use egui_graph::layout;
+use egui_graph::{layout, LayoutNode, LayoutParams};
 
 let positions = layout(
-    nodes.iter().map(|(id, size)| (*id, size)),
-    edges.iter().map(|(from, to)| (*from, *to)),
-    Direction::LeftToRight,
+    nodes.iter().map(|(id, size, inputs, outputs)| {
+        let node = LayoutNode::new(*size)
+            .socket_padding(egui_graph::socket_padding(&style))
+            .inputs(*inputs)
+            .outputs(*outputs);
+        (*id, node)
+    }),
+    // Edge endpoints are `(node, socket index)`, as in `Edge::new`.
+    edges.iter().map(|(a, out_ix, b, in_ix)| ((*a, *out_ix), (*b, *in_ix))),
+    LayoutParams::new(Direction::LeftToRight),
 );
 view.layout = positions;
+```
+
+For graphs without socket information, `layout_from_sizes` accepts plain
+`(NodeId, size)` nodes and `(NodeId, NodeId)` edges.
+
+To keep long edges from passing over unrelated nodes, use `layout_routed`,
+which additionally returns corridor waypoints for the edges that need them,
+and thread each edge through its route when drawing:
+
+```rust
+let (positions, routes) = layout_routed(nodes, edges, params);
+view.layout = positions;
+// ... when drawing each edge:
+let waypoints = routes.route((src, out_ix), (dst, in_ix), 0).unwrap_or(&[]);
+Edge::new((src, out_ix), (dst, in_ix), &mut selected)
+    .waypoints(waypoints)
+    .show(ctx, ui);
 ```
 
 ## Controls

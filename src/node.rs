@@ -259,7 +259,7 @@ impl Node {
         let max_sockets = std::cmp::max(self.inputs, self.outputs);
         let min_socket_gap = min_interact_len + min_item_spacing;
         let win_corner_radius = ui.visuals().window_corner_radius.ne as f32;
-        let socket_padding = win_corner_radius + min_interact_len * 0.5;
+        let socket_padding = crate::socket::socket_padding(ui.style());
         if max_sockets > 1 {
             let socket_gap_factor = if self.collapsed {
                 Self::COLLAPSED_SOCKET_GAP_FACTOR
