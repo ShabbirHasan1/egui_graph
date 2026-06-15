@@ -1176,7 +1176,11 @@ mod tests {
             let dots = (rect.width() / step) * (rect.height() / step);
             assert!(dots <= 16_384.0, "{dots} dots at scale {scale}");
             let multiple = step / base;
-            assert_eq!(multiple.log2().fract(), 0.0, "{multiple} not a power of two");
+            assert_eq!(
+                multiple.log2().fract(),
+                0.0,
+                "{multiple} not a power of two"
+            );
         }
         // Degenerate rects stay harmless.
         let inf = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(f32::INFINITY, 100.0));
