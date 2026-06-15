@@ -99,7 +99,7 @@ impl App {
             edge_curvature: 0.5,
             flow: egui::Direction::TopDown,
             #[cfg(feature = "layout")]
-            auto_layout: false,
+            auto_layout: true,
             #[cfg(feature = "layout")]
             socket_aware: true,
             #[cfg(feature = "layout")]
@@ -486,13 +486,6 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
         .auto_sized()
         .show(ui.ctx(), |ui| {
             ui.label("GRAPH CONFIG");
-            // Frame pacing readout for diagnosing slowdowns.
-            let dt = ui.input(|i| i.unstable_dt);
-            ui.label(format!(
-                "Frame: {:.1} ms ({:.0} fps)",
-                dt * 1000.0,
-                1.0 / dt.max(1e-6)
-            ));
             #[cfg(feature = "layout")]
             ui.horizontal(|ui| {
                 ui.checkbox(&mut state.auto_layout, "Automatic Layout");
