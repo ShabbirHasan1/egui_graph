@@ -67,6 +67,9 @@ type Graph = petgraph::stable_graph::StableGraph<Node, (usize, usize)>;
 struct Node {
     name: String,
     kind: NodeKind,
+    /// Per-node flow override; `None` follows the graph-wide `State::flow`.
+    /// Set via the "Selected flow" buttons to showcase mixed-flow layout.
+    flow: Option<egui::Direction>,
 }
 
 enum NodeKind {
@@ -168,7 +171,25 @@ fn new_graph() -> Graph {
 
 fn node(name: impl ToString, kind: NodeKind) -> Node {
     let name = name.to_string();
-    Node { name, kind }
+    Node {
+        name,
+        kind,
+        flow: None,
+    }
+}
+
+/// A node's effective flow: its override, else the graph-wide default.
+fn node_flow(node: &Node, default: egui::Direction) -> egui::Direction {
+    node.flow.unwrap_or(default)
+}
+
+/// Set the flow override on every currently-selected node.
+fn set_selected_flow(state: &mut State, flow: Option<egui::Direction>) {
+    for &n in &state.interaction.selection.nodes {
+        if let Some(node) = state.graph.node_weight_mut(n) {
+            node.flow = flow;
+        }
+    }
 }
 
 /// Get the egui::Id for the demo graph widget.
@@ -188,11 +209,17 @@ fn socket_counts(graph: &Graph, n: NodeIndex) -> (usize, usize) {
     (inputs, outputs)
 }
 
-/// Each node's size (from graph memory) and socket counts, as layout input.
+/// Each node's size (from graph memory), socket counts and flow, as layout
+/// input.
+///
+/// Note: this feeds socket *counts*, not the exact rendered socket positions,
+/// so the layout's socket anchors are evenly spaced approximations; cross-flow
+/// edges between clusters therefore connect best-effort.
 #[cfg(feature = "layout")]
 fn layout_nodes(
     graph: &Graph,
     ctx: &egui::Context,
+    default_flow: egui::Direction,
 ) -> Vec<(egui_graph::NodeId, egui_graph::LayoutNode)> {
     let socket_padding = egui_graph::socket_padding(&ctx.global_style());
     // Access graph memory once and iterate inside to avoid repeated locks
@@ -210,7 +237,8 @@ fn layout_nodes(
                 let node = egui_graph::LayoutNode::new(size)
                     .socket_padding(socket_padding)
                     .inputs(inputs)
-                    .outputs(outputs);
+                    .outputs(outputs)
+                    .flow(node_flow(&graph[n], default_flow));
                 (node_id, node)
             })
             .collect()
@@ -238,7 +266,7 @@ fn layout(state: &State, ctx: &egui::Context) -> (egui_graph::Layout, egui_graph
         .node_gap(state.node_gap)
         .socket_aware(state.socket_aware);
     egui_graph::layout_routed(
-        layout_nodes(&state.graph, ctx),
+        layout_nodes(&state.graph, ctx, state.flow),
         socket_edges(&state.graph),
         params,
     )
@@ -253,7 +281,9 @@ fn freehand_routes(
     node_gap: f32,
     ctx: &egui::Context,
 ) -> egui_graph::EdgeRoutes {
-    let nodes = layout_nodes(graph, ctx)
+    // Freehand routing assumes one flow; with mixed per-node flows the routes
+    // are best-effort (see `route_edges`' single-flow limitation).
+    let nodes = layout_nodes(graph, ctx, flow)
         .into_iter()
         .filter_map(|(id, node)| Some((id, *layout.get(&id)?, node)));
     let params = egui_graph::LayoutParams::new(flow).node_gap(node_gap);
@@ -309,13 +339,14 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
     let indices: Vec<_> = state.graph.node_indices().collect();
     for n in indices {
         let (inputs, outputs) = socket_counts(&state.graph, n);
+        let flow = node_flow(&state.graph[n], state.flow);
         let node = &mut state.graph[n];
         let node_id = egui_graph::NodeId::from_u64(n.index() as u64);
         state.node_id_map.insert(node_id, n);
         let response = egui_graph::node::Node::from_id(node_id)
             .inputs(inputs)
             .outputs(outputs)
-            .flow(state.flow)
+            .flow(flow)
             .socket_radius(state.socket_radius)
             .socket_color(state.socket_color)
             .show(nctx, ui, |node_ctx| {
@@ -345,7 +376,7 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
                         ref mut color,
                         ref mut alpha,
                     } => {
-                        if state.flow.is_horizontal() {
+                        if flow.is_horizontal() {
                             sockets.grid(egui::Grid::new("mixer"), ui, |grid, ui| {
                                 grid.row(ui, Some(0), None, |ui| {
                                     ui.label("Color");
@@ -356,7 +387,7 @@ fn nodes(nctx: &mut egui_graph::NodesCtx, ui: &mut egui::Ui, state: &mut State) 
                                     ui.add(egui::Slider::new(alpha, 0.0..=1.0));
                                 });
                             });
-                        } else if state.flow.is_vertical() {
+                        } else if flow.is_vertical() {
                             ui.horizontal(|ui| {
                                 sockets.col(ui, Some(0), None, |ui| {
                                     ui.add(
@@ -509,6 +540,24 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                 ui.label("Flow:");
                 ui.radio_value(&mut state.flow, egui::Direction::LeftToRight, "Right");
                 ui.radio_value(&mut state.flow, egui::Direction::TopDown, "Down");
+            });
+            // Override the flow of the selected nodes to showcase mixed-flow
+            // layout: differing flows split the graph into clusters laid out
+            // each in their own direction.
+            ui.horizontal(|ui| {
+                ui.label("Selected flow:");
+                let any_selected = !state.interaction.selection.nodes.is_empty();
+                ui.add_enabled_ui(any_selected, |ui| {
+                    if ui.button("Right").clicked() {
+                        set_selected_flow(state, Some(egui::Direction::LeftToRight));
+                    }
+                    if ui.button("Down").clicked() {
+                        set_selected_flow(state, Some(egui::Direction::TopDown));
+                    }
+                    if ui.button("Default").clicked() {
+                        set_selected_flow(state, None);
+                    }
+                });
             });
             ui.horizontal(|ui| {
                 ui.label("Edge curvature:");

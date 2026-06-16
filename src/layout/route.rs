@@ -24,6 +24,11 @@ const MAX_DEPTH: usize = 6;
 /// description [`layout`](super::layout) takes; `params` provides the flow
 /// direction and `node_gap` (used as the detour clearance). Edges referencing
 /// unknown nodes and self-loops are ignored, as in [`layout`](super::layout).
+///
+/// Routing assumes a single flow: every node and edge is dodged along
+/// `params.flow`, so per-node [`LayoutNode::flow`](super::LayoutNode::flow)
+/// overrides are ignored here. Mixed-flow graphs are best laid out and routed
+/// by [`layout_routed`](super::layout_routed).
 pub fn route_edges(
     nodes: impl IntoIterator<Item = (NodeId, egui::Pos2, LayoutNode)>,
     edges: impl IntoIterator<Item = ((NodeId, OutputIx), (NodeId, InputIx))>,
