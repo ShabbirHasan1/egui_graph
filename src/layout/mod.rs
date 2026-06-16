@@ -9,7 +9,7 @@
 
 use crate::edge::{InputIx, OutputIx};
 use crate::{Layout, NodeId};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub use route::route_edges;
 
@@ -742,22 +742,52 @@ fn cluster_frames(placed: &[Placed], size_screen: &[egui::Vec2]) -> Vec<ClusterF
 
 /// Arrange clusters of differing flows. Each cluster is laid out in its own
 /// flow, then the clusters' screen bounding boxes are positioned by an outer
-/// pass and the members translated into place.
+/// layout over the edges that cross cluster boundaries, and the members
+/// translated into place.
 fn arrange_mixed(
     placed: &[Placed],
     params: &LayoutParams,
     size_screen: &[egui::Vec2],
-    _cluster_of: &[usize],
+    cluster_of: &[usize],
     cedges: &[CEdge],
     num_nodes: usize,
 ) -> (Vec<egui::Pos2>, Vec<Vec<egui::Pos2>>) {
     let frames = cluster_frames(placed, size_screen);
-    let sizes: Vec<egui::Vec2> = frames.iter().map(|f| f.size).collect();
-    let offsets = stack_boxes(&sizes, params.component_gap);
 
+    // Position the cluster boxes with a meta-graph: one node per cluster,
+    // sized by its screen bounding box, joined by the cut edges (deduplicated,
+    // keeping their direction). The outer flow is the params' flow. The
+    // meta-graph is single-flow, so this never recurses back into this branch.
+    let meta_id = |c: usize| NodeId::from_u64(c as u64);
+    let meta_nodes = frames
+        .iter()
+        .enumerate()
+        .map(|(c, f)| (meta_id(c), LayoutNode::new(f.size)));
+    let mut meta_edges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for e in cedges {
+        let (src, dst) = (cluster_of[e.src], cluster_of[e.dst]);
+        if src != dst {
+            meta_edges.insert((src, dst));
+        }
+    }
+    let meta_params = LayoutParams {
+        socket_aware: false,
+        ..params.clone()
+    };
+    let meta = layout(
+        meta_nodes,
+        meta_edges
+            .iter()
+            .map(|&(a, b)| ((meta_id(a), 0), (meta_id(b), 0))),
+        meta_params,
+    );
+
+    // Each cluster fills its meta node's rect, so its bbox min lands on the
+    // meta node's top-left.
     let mut tls = vec![egui::Pos2::ZERO; num_nodes];
     let mut edge_waypoints: Vec<Vec<egui::Pos2>> = vec![Vec::new(); cedges.len()];
-    for (p, (frame, &offset)) in placed.iter().zip(frames.iter().zip(&offsets)) {
+    for (c, (p, frame)) in placed.iter().zip(&frames).enumerate() {
+        let offset = meta[&meta_id(c)].to_vec2();
         for (&g, &tl) in p.members.iter().zip(&frame.member_tls) {
             tls[g] = tl + offset;
         }
@@ -766,24 +796,6 @@ fn arrange_mixed(
         }
     }
     (tls, edge_waypoints)
-}
-
-/// Stack boxes along the screen Y axis, largest first, returning each box's
-/// top-left offset.
-fn stack_boxes(sizes: &[egui::Vec2], gap: f32) -> Vec<egui::Vec2> {
-    let mut order: Vec<usize> = (0..sizes.len()).collect();
-    order.sort_by(|&a, &b| {
-        (sizes[b].x * sizes[b].y)
-            .total_cmp(&(sizes[a].x * sizes[a].y))
-            .then(a.cmp(&b))
-    });
-    let mut offsets = vec![egui::Vec2::ZERO; sizes.len()];
-    let mut cursor = 0.0;
-    for &i in &order {
-        offsets[i] = egui::Vec2::new(0.0, cursor);
-        cursor += sizes[i].y + gap;
-    }
-    offsets
 }
 
 /// The anchor offset of `socket` within `anchors`, falling back to the
@@ -1387,6 +1399,20 @@ mod tests {
                 assert!(!a.intersects(b.shrink(1.0)), "{a:?} overlaps {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn mixed_flow_clusters_follow_outer_flow() {
+        let size = egui::Vec2::new(100.0, 50.0);
+        let (nodes, edges) = perpendicular_chains();
+        // Outer flow left-to-right: the cut edge `2->3` should place the first
+        // chain's cluster entirely left of the second's.
+        let l = layout(nodes, edges, egui::Direction::LeftToRight);
+        let a_max_x = (0..3)
+            .map(|v| l[&nid(v)].x + size.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let b_min_x = (3..6).map(|v| l[&nid(v)].x).fold(f32::INFINITY, f32::min);
+        assert!(a_max_x <= b_min_x + 1e-3, "{a_max_x} !<= {b_min_x}");
     }
 
     #[test]
