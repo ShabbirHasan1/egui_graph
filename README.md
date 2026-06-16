@@ -200,6 +200,13 @@ The demo showcases:
 - Automatic layout
 - Configuration options
 
+For a focused look at laying out graphs whose nodes flow in different
+directions, run the mixed-flow example:
+
+```bash
+cargo run --release --example mixed_flow
+```
+
 ## Architecture
 
 The library follows egui's immediate-mode paradigm while maintaining necessary
