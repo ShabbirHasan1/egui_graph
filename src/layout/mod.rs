@@ -9,7 +9,7 @@
 
 use crate::edge::{InputIx, OutputIx};
 use crate::{Layout, NodeId};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub use route::route_edges;
 
@@ -26,6 +26,7 @@ pub struct LayoutNode {
     socket_padding: f32,
     inputs: LayoutSockets,
     outputs: LayoutSockets,
+    flow: Option<egui::Direction>,
 }
 
 /// Parameters controlling [`layout`].
@@ -106,6 +107,8 @@ struct Bounds {
 struct Placed {
     /// Global node indices of the component's members.
     members: Vec<usize>,
+    /// The shared flow direction of the component's members.
+    flow: egui::Direction,
     /// The `(main, cross)` centre of each member.
     centers: Vec<(f32, f32)>,
     /// Corridor waypoints of each component edge.
@@ -123,6 +126,7 @@ impl LayoutNode {
             socket_padding: 0.0,
             inputs: LayoutSockets::EvenlySpaced(0),
             outputs: LayoutSockets::EvenlySpaced(0),
+            flow: None,
         }
     }
 
@@ -164,6 +168,18 @@ impl LayoutNode {
     /// Non-finite offsets anchor at the node's cross-axis centre.
     pub fn output_offsets(mut self, offsets: Vec<f32>) -> Self {
         self.outputs = LayoutSockets::Explicit(offsets);
+        self
+    }
+
+    /// Override the flow direction for this node alone.
+    ///
+    /// Nodes connected only to others of the same effective flow are laid out
+    /// together in that flow; edges joining nodes of different flows do not
+    /// bind them into one cluster, and the clusters are instead arranged
+    /// along the outer direction ([`LayoutParams::flow`]). Defaults to the
+    /// params' flow.
+    pub fn flow(mut self, flow: egui::Direction) -> Self {
+        self.flow = Some(flow);
         self
     }
 }
@@ -293,27 +309,22 @@ pub fn layout_routed(
     params: impl Into<LayoutParams>,
 ) -> (Layout, EdgeRoutes) {
     let params = params.into();
-    let horizontal = matches!(
-        params.flow,
-        egui::Direction::LeftToRight | egui::Direction::RightToLeft
-    );
 
-    // Canonicalise the nodes in a deterministic order.
+    // Canonicalise the nodes in a deterministic order, each by its own flow.
     let nodes: BTreeMap<NodeId, LayoutNode> = nodes.into_iter().collect();
     let ids: Vec<NodeId> = nodes.keys().copied().collect();
     let index_of: HashMap<NodeId, usize> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let mut node_flow = Vec::with_capacity(ids.len());
     let mut size_screen = Vec::with_capacity(ids.len());
     let mut size_main = Vec::with_capacity(ids.len());
     let mut size_cross = Vec::with_capacity(ids.len());
     let mut in_anchors = Vec::with_capacity(ids.len());
     let mut out_anchors = Vec::with_capacity(ids.len());
     for node in nodes.values() {
+        let flow = node.flow.unwrap_or(params.flow);
         let size = sanitize_size(node.size);
-        let (main, cross) = if horizontal {
-            (size.x, size.y)
-        } else {
-            (size.y, size.x)
-        };
+        let (main, cross) = canonical_size(flow, size);
+        node_flow.push(flow);
         size_screen.push(size);
         size_main.push(main);
         size_cross.push(cross);
@@ -348,9 +359,14 @@ pub fn layout_routed(
         .collect();
     cedges.sort_by_key(|e| (e.src, e.dst, e.src_socket, e.dst_socket));
 
-    // Split into weakly-connected components.
+    // Split into clusters: weakly-connected components that share a flow.
+    // An edge joining two flows never unions its endpoints, so every cluster
+    // has a single, well-defined flow (proven by induction over the unions).
     let mut parent: Vec<usize> = (0..ids.len()).collect();
     for e in &cedges {
+        if node_flow[e.src] != node_flow[e.dst] {
+            continue;
+        }
         let (ra, rb) = (uf_find(&mut parent, e.src), uf_find(&mut parent, e.dst));
         if ra != rb {
             parent[ra.max(rb)] = ra.min(rb);
@@ -370,6 +386,11 @@ pub fn layout_routed(
     let mut edges_by_root: BTreeMap<usize, (Vec<CEdge>, Vec<usize>)> = BTreeMap::new();
     for (e, edge) in cedges.iter().enumerate() {
         let root = uf_find(&mut parent, edge.src);
+        // Cut edges join different clusters; they carry no corridor and are
+        // positioned by the outer arrangement, not any single cluster.
+        if root != uf_find(&mut parent, edge.dst) {
+            continue;
+        }
         let (local, edge_ixs) = edges_by_root.entry(root).or_default();
         local.push(CEdge {
             src: local_of[edge.src],
@@ -380,10 +401,16 @@ pub fn layout_routed(
         edge_ixs.push(e);
     }
 
-    // Lay out each component independently in canonical space.
+    // Lay out each cluster independently in canonical space, recording which
+    // cluster every node belongs to for the outer arrangement.
+    let mut cluster_of = vec![0usize; ids.len()];
     let mut placed: Vec<Placed> = members_by_root
         .into_iter()
-        .map(|(root, members)| {
+        .enumerate()
+        .map(|(cluster, (root, members))| {
+            for &v in &members {
+                cluster_of[v] = cluster;
+            }
             let (edges, edge_ixs) = edges_by_root.remove(&root).unwrap_or_default();
             let cg = CGraph {
                 size_main: members.iter().map(|&v| size_main[v]).collect(),
@@ -394,6 +421,7 @@ pub fn layout_routed(
             };
             let (centers, routes, bounds) = layout_connected(&cg, &params);
             Placed {
+                flow: node_flow[members[0]],
                 members,
                 centers,
                 routes,
@@ -403,42 +431,26 @@ pub fn layout_routed(
         })
         .collect();
 
-    // Stack the components along the cross axis, largest first.
-    placed.sort_by(|a, b| {
-        b.bounds
-            .main_extent()
-            .total_cmp(&a.bounds.main_extent())
-            .then(b.bounds.cross_extent().total_cmp(&a.bounds.cross_extent()))
-            .then(a.members[0].cmp(&b.members[0]))
-    });
-    let mut tls = vec![egui::Pos2::ZERO; ids.len()];
-    let mut edge_waypoints: Vec<Vec<egui::Pos2>> = vec![Vec::new(); cedges.len()];
-    let mut cross_cursor = 0.0;
-    for p in &placed {
-        let main_shift = -p.bounds.min_main;
-        let cross_shift = cross_cursor - p.bounds.min_cross;
-        // Map canonical coordinates back to screen space.
-        let to_screen = |(main, cross): (f32, f32)| {
-            let main = main + main_shift;
-            let cross = cross + cross_shift;
-            let main = match params.flow {
-                egui::Direction::LeftToRight | egui::Direction::TopDown => main,
-                egui::Direction::RightToLeft | egui::Direction::BottomUp => -main,
-            };
-            if horizontal {
-                egui::Pos2::new(main, cross)
-            } else {
-                egui::Pos2::new(cross, main)
-            }
-        };
-        for (&global, &center) in p.members.iter().zip(&p.centers) {
-            tls[global] = to_screen(center) - size_screen[global] * 0.5;
-        }
-        for (&e, route) in p.edge_ixs.iter().zip(&p.routes) {
-            edge_waypoints[e] = route.iter().map(|&wp| to_screen(wp)).collect();
-        }
-        cross_cursor += p.bounds.cross_extent() + params.component_gap;
-    }
+    // Arrange the clusters in screen space. A single shared flow keeps the
+    // historical cross-axis packing (preserving its mirror and transpose
+    // symmetries; with one flow there are no cross-cluster edges). Mixed
+    // flows are arranged by an outer pass that gives each cluster its own
+    // orientation, so canonical cross axes never collide in screen space.
+    let single_flow = node_flow
+        .first()
+        .map_or(true, |&f0| node_flow.iter().all(|&f| f == f0));
+    let (mut tls, mut edge_waypoints) = if single_flow {
+        arrange_packed(&mut placed, &params, &size_screen, ids.len(), cedges.len())
+    } else {
+        arrange_mixed(
+            &placed,
+            &params,
+            &size_screen,
+            &cluster_of,
+            &cedges,
+            ids.len(),
+        )
+    };
 
     // Centre the overall bounding box around the origin.
     let mut min = egui::Pos2::new(f32::INFINITY, f32::INFINITY);
@@ -472,11 +484,14 @@ pub fn layout_routed(
         if waypoints.is_empty() {
             continue;
         }
+        // Cut edges (between clusters) reserve no corridor and were skipped
+        // above; an intra-cluster edge's endpoints share their cluster's flow.
+        let flow = node_flow[edge.src];
         let a_anchor = anchor(&out_anchors[edge.src], edge.src_socket);
         let b_anchor = anchor(&in_anchors[edge.dst], edge.dst_socket);
-        let a = anchored_socket_pos(params.flow, rects[edge.src], false, a_anchor);
-        let b = anchored_socket_pos(params.flow, rects[edge.dst], true, b_anchor);
-        if direct_curve_clear(&params, &rects, edge, a, b) {
+        let a = anchored_socket_pos(flow, rects[edge.src], false, a_anchor);
+        let b = anchored_socket_pos(flow, rects[edge.dst], true, b_anchor);
+        if direct_curve_clear(flow, &params, &rects, edge, a, b) {
             continue;
         }
         let key = (
@@ -577,6 +592,212 @@ fn layout_connected(
     (centers, routes, bounds)
 }
 
+/// Split a node's screen size into canonical `(main, cross)` extents for the
+/// given flow: the main axis runs along the flow, the cross axis across it.
+fn canonical_size(flow: egui::Direction, size: egui::Vec2) -> (f32, f32) {
+    if matches!(
+        flow,
+        egui::Direction::LeftToRight | egui::Direction::RightToLeft
+    ) {
+        (size.x, size.y)
+    } else {
+        (size.y, size.x)
+    }
+}
+
+/// Map a canonical `(main, cross)` point back to screen space for `flow`,
+/// after shifting the cluster's bounds by `main_shift`/`cross_shift`.
+fn to_screen(
+    flow: egui::Direction,
+    main_shift: f32,
+    cross_shift: f32,
+    (main, cross): (f32, f32),
+) -> egui::Pos2 {
+    let main = main + main_shift;
+    let cross = cross + cross_shift;
+    let main = match flow {
+        egui::Direction::LeftToRight | egui::Direction::TopDown => main,
+        egui::Direction::RightToLeft | egui::Direction::BottomUp => -main,
+    };
+    if matches!(
+        flow,
+        egui::Direction::LeftToRight | egui::Direction::RightToLeft
+    ) {
+        egui::Pos2::new(main, cross)
+    } else {
+        egui::Pos2::new(cross, main)
+    }
+}
+
+/// The screen-space bounding box covering every rect and point.
+fn screen_bounds(rects: &[egui::Rect], points: &[egui::Pos2]) -> egui::Rect {
+    let mut min = egui::Pos2::new(f32::INFINITY, f32::INFINITY);
+    let mut max = egui::Pos2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for r in rects {
+        min = min.min(r.min);
+        max = max.max(r.max);
+    }
+    for &p in points {
+        min = min.min(p);
+        max = max.max(p);
+    }
+    egui::Rect::from_min_max(min, max)
+}
+
+/// Pack clusters that all share one flow along the cross axis, largest first,
+/// returning each node's screen top-left and each edge's screen waypoints.
+///
+/// With a single flow every cluster maps its canonical cross axis onto the
+/// same screen axis, so a shared cross cursor stacks them without overlap and
+/// reproduces the historical single-flow layout.
+fn arrange_packed(
+    placed: &mut [Placed],
+    params: &LayoutParams,
+    size_screen: &[egui::Vec2],
+    num_nodes: usize,
+    num_edges: usize,
+) -> (Vec<egui::Pos2>, Vec<Vec<egui::Pos2>>) {
+    placed.sort_by(|a, b| {
+        b.bounds
+            .main_extent()
+            .total_cmp(&a.bounds.main_extent())
+            .then(b.bounds.cross_extent().total_cmp(&a.bounds.cross_extent()))
+            .then(a.members[0].cmp(&b.members[0]))
+    });
+    let mut tls = vec![egui::Pos2::ZERO; num_nodes];
+    let mut edge_waypoints: Vec<Vec<egui::Pos2>> = vec![Vec::new(); num_edges];
+    let mut cross_cursor = 0.0;
+    for p in placed.iter() {
+        let main_shift = -p.bounds.min_main;
+        let cross_shift = cross_cursor - p.bounds.min_cross;
+        for (&global, &center) in p.members.iter().zip(&p.centers) {
+            tls[global] =
+                to_screen(p.flow, main_shift, cross_shift, center) - size_screen[global] * 0.5;
+        }
+        for (&e, route) in p.edge_ixs.iter().zip(&p.routes) {
+            edge_waypoints[e] = route
+                .iter()
+                .map(|&wp| to_screen(p.flow, main_shift, cross_shift, wp))
+                .collect();
+        }
+        cross_cursor += p.bounds.cross_extent() + params.component_gap;
+    }
+    (tls, edge_waypoints)
+}
+
+/// A cluster laid out into a local screen frame, its bounding box min at the
+/// origin, ready to be positioned by the outer arrangement.
+struct ClusterFrame {
+    /// Screen top-left of each member, relative to the cluster's bbox min.
+    member_tls: Vec<egui::Pos2>,
+    /// Screen waypoints of each cluster edge, relative to the bbox min.
+    routes: Vec<Vec<egui::Pos2>>,
+    /// The cluster's screen-space bounding box size.
+    size: egui::Vec2,
+}
+
+/// Place each cluster into a local screen frame using its own flow.
+fn cluster_frames(placed: &[Placed], size_screen: &[egui::Vec2]) -> Vec<ClusterFrame> {
+    placed
+        .iter()
+        .map(|p| {
+            let main_shift = -p.bounds.min_main;
+            let cross_shift = -p.bounds.min_cross;
+            let member_tls: Vec<egui::Pos2> = p
+                .members
+                .iter()
+                .zip(&p.centers)
+                .map(|(&g, &c)| {
+                    to_screen(p.flow, main_shift, cross_shift, c) - size_screen[g] * 0.5
+                })
+                .collect();
+            let routes: Vec<Vec<egui::Pos2>> = p
+                .routes
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|&wp| to_screen(p.flow, main_shift, cross_shift, wp))
+                        .collect()
+                })
+                .collect();
+            let rects: Vec<egui::Rect> = member_tls
+                .iter()
+                .zip(&p.members)
+                .map(|(&tl, &g)| egui::Rect::from_min_size(tl, size_screen[g]))
+                .collect();
+            let route_pts: Vec<egui::Pos2> = routes.iter().flatten().copied().collect();
+            let bbox = screen_bounds(&rects, &route_pts);
+            let shift = bbox.min.to_vec2();
+            ClusterFrame {
+                member_tls: member_tls.iter().map(|&tl| tl - shift).collect(),
+                routes: routes
+                    .iter()
+                    .map(|r| r.iter().map(|&p| p - shift).collect())
+                    .collect(),
+                size: bbox.size(),
+            }
+        })
+        .collect()
+}
+
+/// Arrange clusters of differing flows. Each cluster is laid out in its own
+/// flow, then the clusters' screen bounding boxes are positioned by an outer
+/// layout over the edges that cross cluster boundaries, and the members
+/// translated into place.
+fn arrange_mixed(
+    placed: &[Placed],
+    params: &LayoutParams,
+    size_screen: &[egui::Vec2],
+    cluster_of: &[usize],
+    cedges: &[CEdge],
+    num_nodes: usize,
+) -> (Vec<egui::Pos2>, Vec<Vec<egui::Pos2>>) {
+    let frames = cluster_frames(placed, size_screen);
+
+    // Position the cluster boxes with a meta-graph: one node per cluster,
+    // sized by its screen bounding box, joined by the cut edges (deduplicated,
+    // keeping their direction). The outer flow is the params' flow. The
+    // meta-graph is single-flow, so this never recurses back into this branch.
+    let meta_id = |c: usize| NodeId::from_u64(c as u64);
+    let meta_nodes = frames
+        .iter()
+        .enumerate()
+        .map(|(c, f)| (meta_id(c), LayoutNode::new(f.size)));
+    let mut meta_edges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for e in cedges {
+        let (src, dst) = (cluster_of[e.src], cluster_of[e.dst]);
+        if src != dst {
+            meta_edges.insert((src, dst));
+        }
+    }
+    let meta_params = LayoutParams {
+        socket_aware: false,
+        ..params.clone()
+    };
+    let meta = layout(
+        meta_nodes,
+        meta_edges
+            .iter()
+            .map(|&(a, b)| ((meta_id(a), 0), (meta_id(b), 0))),
+        meta_params,
+    );
+
+    // Each cluster fills its meta node's rect, so its bbox min lands on the
+    // meta node's top-left.
+    let mut tls = vec![egui::Pos2::ZERO; num_nodes];
+    let mut edge_waypoints: Vec<Vec<egui::Pos2>> = vec![Vec::new(); cedges.len()];
+    for (c, (p, frame)) in placed.iter().zip(&frames).enumerate() {
+        let offset = meta[&meta_id(c)].to_vec2();
+        for (&g, &tl) in p.members.iter().zip(&frame.member_tls) {
+            tls[g] = tl + offset;
+        }
+        for (&e, route) in p.edge_ixs.iter().zip(&frame.routes) {
+            edge_waypoints[e] = route.iter().map(|&wp| wp + offset).collect();
+        }
+    }
+    (tls, edge_waypoints)
+}
+
 /// The anchor offset of `socket` within `anchors`, falling back to the
 /// cross-axis centre for sockets without a known offset.
 fn anchor(anchors: &[f32], socket: usize) -> f32 {
@@ -616,13 +837,14 @@ fn flow_vec(flow: egui::Direction) -> egui::Vec2 {
 /// normals by at most half the socket distance, so the curve is bounded by
 /// the hull of the sockets and the strongest possible control points.
 fn direct_curve_clear(
+    flow: egui::Direction,
     params: &LayoutParams,
     rects: &[egui::Rect],
     edge: &CEdge,
     a: egui::Pos2,
     b: egui::Pos2,
 ) -> bool {
-    let flow = flow_vec(params.flow);
+    let flow = flow_vec(flow);
     let ctrl_len = a.distance(b) * crate::bezier::Cubic::MAX_CURVATURE_FACTOR;
     let mut hull = egui::Rect::from_two_pos(a, b);
     hull.extend_with(a + flow * ctrl_len);
@@ -1075,6 +1297,180 @@ mod tests {
         assert!(routes.route((nid(0), 1), (nid(2), 1), 0).is_some());
     }
 
+    /// A 1-in/1-out node with an explicit flow.
+    fn flow_node(v: u64, flow: egui::Direction) -> (NodeId, LayoutNode) {
+        (
+            nid(v),
+            LayoutNode::new([100.0, 50.0])
+                .inputs(1)
+                .outputs(1)
+                .flow(flow),
+        )
+    }
+
+    /// Two perpendicular chains joined by one cross-flow edge: `0->1->2` flows
+    /// top-down, `3->4->5` flows left-to-right, and `2->3` crosses between
+    /// them.
+    #[allow(clippy::type_complexity)]
+    fn perpendicular_chains() -> (
+        Vec<(NodeId, LayoutNode)>,
+        Vec<((NodeId, usize), (NodeId, usize))>,
+    ) {
+        use egui::Direction::{LeftToRight, TopDown};
+        let nodes = vec![
+            flow_node(0, TopDown),
+            flow_node(1, TopDown),
+            flow_node(2, TopDown),
+            flow_node(3, LeftToRight),
+            flow_node(4, LeftToRight),
+            flow_node(5, LeftToRight),
+        ];
+        let edges = vec![
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(3), 0), (nid(4), 0)),
+            ((nid(4), 0), (nid(5), 0)),
+            ((nid(2), 0), (nid(3), 0)), // cross-flow cut edge
+        ];
+        (nodes, edges)
+    }
+
+    #[test]
+    fn per_node_flow_none_matches_global() {
+        let edges = || {
+            vec![
+                ((nid(0), 0), (nid(1), 0)),
+                ((nid(0), 0), (nid(2), 0)),
+                ((nid(1), 0), (nid(3), 0)),
+                ((nid(2), 0), (nid(3), 0)),
+                ((nid(3), 0), (nid(4), 0)),
+            ]
+        };
+        // Every node defaulting to the params' flow...
+        let implicit = layout(
+            simple_nodes(5, [100.0, 50.0]),
+            edges(),
+            egui::Direction::TopDown,
+        );
+        // ...equals every node overriding to that same flow, regardless of the
+        // params' flow (which is then only a fallback nobody falls back to).
+        let explicit: Vec<_> = (0..5)
+            .map(|v| flow_node(v, egui::Direction::TopDown))
+            .collect();
+        let explicit = layout(explicit, edges(), egui::Direction::LeftToRight);
+        assert_eq!(implicit, explicit);
+    }
+
+    #[test]
+    fn mixed_flow_lays_each_chain_in_its_own_flow() {
+        let size = egui::Vec2::new(100.0, 50.0);
+        let (nodes, edges) = perpendicular_chains();
+        let l = layout(nodes, edges, egui::Direction::TopDown);
+        // The top-down chain stacks vertically: shared cross (x), growing y.
+        let (c0, c1, c2) = (
+            center(&l, 0, size),
+            center(&l, 1, size),
+            center(&l, 2, size),
+        );
+        assert!((c0.x - c1.x).abs() < 1e-3, "{c0:?} {c1:?}");
+        assert!((c1.x - c2.x).abs() < 1e-3, "{c1:?} {c2:?}");
+        assert!(c0.y < c1.y && c1.y < c2.y, "{c0:?} {c1:?} {c2:?}");
+        // The left-to-right chain runs horizontally: shared cross (y), growing x.
+        let (c3, c4, c5) = (
+            center(&l, 3, size),
+            center(&l, 4, size),
+            center(&l, 5, size),
+        );
+        assert!((c3.y - c4.y).abs() < 1e-3, "{c3:?} {c4:?}");
+        assert!((c4.y - c5.y).abs() < 1e-3, "{c4:?} {c5:?}");
+        assert!(c3.x < c4.x && c4.x < c5.x, "{c3:?} {c4:?} {c5:?}");
+    }
+
+    #[test]
+    fn mixed_flow_no_overlap() {
+        let size = egui::Vec2::new(100.0, 50.0);
+        let (nodes, edges) = perpendicular_chains();
+        let l = layout(nodes, edges, egui::Direction::TopDown);
+        let rects: Vec<egui::Rect> = (0..6)
+            .map(|v| egui::Rect::from_min_size(l[&nid(v)], size))
+            .collect();
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                assert!(!a.intersects(b.shrink(1.0)), "{a:?} overlaps {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_flow_clusters_follow_outer_flow() {
+        let size = egui::Vec2::new(100.0, 50.0);
+        let (nodes, edges) = perpendicular_chains();
+        // Outer flow left-to-right: the cut edge `2->3` should place the first
+        // chain's cluster entirely left of the second's.
+        let l = layout(nodes, edges, egui::Direction::LeftToRight);
+        let a_max_x = (0..3)
+            .map(|v| l[&nid(v)].x + size.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let b_min_x = (3..6).map(|v| l[&nid(v)].x).fold(f32::INFINITY, f32::min);
+        assert!(a_max_x <= b_min_x + 1e-3, "{a_max_x} !<= {b_min_x}");
+    }
+
+    #[test]
+    fn mixed_flow_deterministic() {
+        let l = || {
+            let (nodes, edges) = perpendicular_chains();
+            layout_routed(nodes, edges, egui::Direction::TopDown)
+        };
+        assert_eq!(l(), l());
+        // The caller's edge order must not matter either.
+        let (nodes, mut edges) = perpendicular_chains();
+        edges.reverse();
+        let reversed = layout_routed(nodes, edges, egui::Direction::TopDown);
+        assert_eq!(l(), reversed);
+    }
+
+    #[test]
+    fn cut_edges_are_unrouted() {
+        use egui::Direction::{LeftToRight, TopDown};
+        // A top-down cluster whose long edge must route around its wide middle
+        // node, plus a left-to-right node joined by a cross-flow cut edge.
+        let nodes = vec![
+            (
+                nid(0),
+                LayoutNode::new([100.0, 100.0])
+                    .inputs(1)
+                    .outputs(2)
+                    .flow(TopDown),
+            ),
+            (
+                nid(1),
+                LayoutNode::new([300.0, 100.0])
+                    .inputs(1)
+                    .outputs(1)
+                    .flow(TopDown),
+            ),
+            (
+                nid(2),
+                LayoutNode::new([100.0, 100.0])
+                    .inputs(2)
+                    .outputs(1)
+                    .flow(TopDown),
+            ),
+            (nid(3), flow_node(3, LeftToRight).1),
+        ];
+        let edges = vec![
+            ((nid(0), 0), (nid(1), 0)),
+            ((nid(1), 0), (nid(2), 0)),
+            ((nid(0), 1), (nid(2), 1)), // long intra-cluster edge over wide `1`
+            ((nid(2), 0), (nid(3), 0)), // cross-flow cut edge
+        ];
+        let (_, routes) = layout_routed(nodes, edges, TopDown);
+        // The long intra-cluster edge reserves a corridor...
+        assert!(routes.route((nid(0), 1), (nid(2), 1), 0).is_some());
+        // ...while the cut edge between clusters is left as a plain curve.
+        assert!(routes.route((nid(2), 0), (nid(3), 0), 0).is_none());
+    }
+
     /// Minimal xorshift PRNG, avoiding a dev-dependency.
     struct XorShift(u64);
 
@@ -1169,6 +1565,60 @@ mod tests {
                 let c_rtl = rtl[&id] + size * 0.5;
                 assert!((c_rtl.x + c_ltr.x).abs() < 1e-2, "seed {seed}");
                 assert!((c_rtl.y - c_ltr.y).abs() < 1e-2, "seed {seed}");
+            }
+        }
+    }
+
+    /// As [`layout_random`], but gives every node one of the four flow
+    /// directions, so the graph splits into many clusters joined by cross-flow
+    /// cut edges.
+    fn layout_random_mixed(seed: u64) -> Layout {
+        let (nodes, edges) = random_graph(seed);
+        let mut rng = XorShift(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1);
+        let flows = [
+            egui::Direction::LeftToRight,
+            egui::Direction::RightToLeft,
+            egui::Direction::TopDown,
+            egui::Direction::BottomUp,
+        ];
+        let nodes = nodes.into_iter().map(move |(id, size)| {
+            let node = LayoutNode::new(size)
+                .socket_padding(8.0)
+                .inputs(4)
+                .outputs(4)
+                .flow(flows[rng.range(flows.len())]);
+            (id, node)
+        });
+        layout(nodes, edges, egui::Direction::TopDown)
+    }
+
+    #[test]
+    fn mixed_random_graphs_are_total_and_deterministic() {
+        for seed in 0..50 {
+            let (nodes, _) = random_graph(seed);
+            let l = layout_random_mixed(seed);
+            assert_eq!(l.len(), nodes.len());
+            assert!(l.values().all(|p| p.x.is_finite() && p.y.is_finite()));
+            assert_eq!(l, layout_random_mixed(seed));
+        }
+    }
+
+    #[test]
+    fn mixed_random_graphs_never_overlap_nodes() {
+        for seed in 0..50 {
+            let (nodes, _) = random_graph(seed);
+            let l = layout_random_mixed(seed);
+            let rects: Vec<egui::Rect> = nodes
+                .iter()
+                .map(|&(id, size)| egui::Rect::from_min_size(l[&id], size))
+                .collect();
+            for (i, a) in rects.iter().enumerate() {
+                for b in &rects[i + 1..] {
+                    assert!(
+                        !a.intersects(b.shrink(1.0)),
+                        "seed {seed}: {a:?} overlaps {b:?}"
+                    );
+                }
             }
         }
     }

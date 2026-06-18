@@ -155,6 +155,16 @@ Edge::new((src, out_ix), (dst, in_ix), &mut selected)
     .show(ctx, ui);
 ```
 
+Nodes may flow in different directions within one graph. Give a node its own
+flow with `LayoutNode::flow`; nodes joined only to others of the same flow are
+laid out together in that flow, while edges crossing between flows split the
+graph into clusters that are arranged along the outer direction
+(`LayoutParams::flow`):
+
+```rust
+let node = LayoutNode::new(size).inputs(1).outputs(1).flow(Direction::TopDown);
+```
+
 ## Controls
 
 ### Mouse Controls
@@ -189,6 +199,13 @@ The demo showcases:
 - Edge creation between nodes
 - Automatic layout
 - Configuration options
+
+For a focused look at laying out graphs whose nodes flow in different
+directions, run the mixed-flow example:
+
+```bash
+cargo run --release --example mixed_flow
+```
 
 ## Architecture
 
