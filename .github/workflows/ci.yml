@@ -13,7 +13,6 @@ concurrency:
 jobs:
   cargo:
     permissions:
-      id-token: "write"
       contents: "read"
     runs-on: ubuntu-latest
     env:
@@ -34,29 +33,3 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@v13
       - uses: Swatinem/rust-cache@v2
       - run: nix develop github:mitchmindtree/egui.nix -c cargo ${{ matrix.command }}
-
-  cargo-publish:
-    needs: cargo
-    permissions:
-      id-token: "write"
-      contents: "read"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@v13
-      - uses: nicknovitski/nix-develop@v1.2.1
-        with:
-          arguments: "github:mitchmindtree/egui.nix"
-      - uses: Swatinem/rust-cache@v2
-      - uses: katyo/publish-crates@v2
-        id: publish-crates
-        with:
-          registry-token: ${{ secrets.CRATESIO_TOKEN }}
-          dry-run: ${{ github.event_name != 'push' }}
-          ignore-unpublished-changes: true
-      - name: List published crates
-        if: ${{ steps.publish-crates.outputs.published != '' }}
-        run: |
-          LIST="${{ join(fromJSON(steps.publish-crates.outputs.published).*.name, ', ') }}"
-          echo "Published crates: $LIST"
