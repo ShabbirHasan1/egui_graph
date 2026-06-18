@@ -4,7 +4,7 @@ version = "0.15.0"
 edition = "2021"
 description = "A general-purpose node graph widget for egui."
 license = "MIT"
-repository = "https://github.com/nannou-org/nannou.git"
+repository = "https://github.com/nannou-org/egui_graph"
 
 # Required for wgpu v0.10 feature resolution.
 resolver = "2"
