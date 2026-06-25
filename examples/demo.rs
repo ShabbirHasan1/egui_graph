@@ -48,6 +48,7 @@ struct State {
     center_view: bool,
     dot_grid: bool,
     immutable: bool,
+    snap: bool,
 }
 
 #[derive(Default)]
@@ -117,6 +118,7 @@ impl App {
             center_view: false,
             dot_grid: true,
             immutable: false,
+            snap: true,
         };
         let view = Default::default();
         App { view, state }
@@ -304,6 +306,7 @@ fn graph(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
         .center_view(state.center_view)
         .dot_grid(state.dot_grid)
         .immutable(state.immutable)
+        .snap(state.snap.then_some(egui_graph::Snap::Round))
         .show(view, ui, |ui, show| {
             show.nodes(ui, |nctx, ui| nodes(nctx, ui, state))
                 .edges(ui, |ectx, ui| {
@@ -536,6 +539,7 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
             ui.checkbox(&mut state.dot_grid, "Show Dot Grid");
             ui.checkbox(&mut state.center_view, "Center View");
             ui.checkbox(&mut state.immutable, "Immutable");
+            ui.checkbox(&mut state.snap, "Snap to Grid");
             ui.horizontal(|ui| {
                 ui.label("Flow:");
                 ui.radio_value(&mut state.flow, egui::Direction::LeftToRight, "Right");
