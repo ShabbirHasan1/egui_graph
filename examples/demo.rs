@@ -22,6 +22,17 @@ struct App {
     view: egui_graph::View,
 }
 
+/// How the demo snaps node positions.
+#[derive(Clone, Copy, PartialEq)]
+enum SnapMode {
+    /// No snapping.
+    Off,
+    /// Snap to the nearest whole graph-space unit (the default).
+    Point,
+    /// Snap to the grid step, aligning nodes with the dot grid.
+    Grid,
+}
+
 struct State {
     graph: Graph,
     interaction: Interaction,
@@ -53,7 +64,8 @@ struct State {
     center_view: bool,
     dot_grid: bool,
     immutable: bool,
-    snap: bool,
+    snap_mode: SnapMode,
+    grid_step: f32,
 }
 
 #[derive(Default)]
@@ -123,7 +135,9 @@ impl App {
             center_view: false,
             dot_grid: true,
             immutable: false,
-            snap: true,
+            snap_mode: SnapMode::Point,
+            // Matches the dot grid's previous default (style interact_size.y).
+            grid_step: 18.0,
         };
         let view = Default::default();
         App { view, state }
@@ -311,7 +325,19 @@ fn graph(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
         .center_view(state.center_view)
         .dot_grid(state.dot_grid)
         .immutable(state.immutable)
-        .snap(state.snap.then_some(egui_graph::Snap::Round))
+        // Snap and the dot grid are independent options. In `Grid` mode the
+        // demo drives the snap step from the same value as the dot grid so
+        // snapped nodes land on the visible grid; in `Point` mode it snaps to
+        // whole units regardless of the grid spacing.
+        .snap(match state.snap_mode {
+            SnapMode::Off => None,
+            SnapMode::Point | SnapMode::Grid => Some(egui_graph::Snap::Round),
+        })
+        .snap_step(match state.snap_mode {
+            SnapMode::Grid => state.grid_step,
+            _ => 1.0,
+        })
+        .dot_grid_step(state.grid_step)
         .show(view, ui, |ui, show| {
             show.nodes(ui, |nctx, ui| nodes(nctx, ui, state))
                 .edges(ui, |ectx, ui| {
@@ -541,10 +567,8 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
             // in freehand mode they dodge nodes best-effort.
             #[cfg(feature = "layout")]
             ui.checkbox(&mut state.route_edges, "Edge Routing");
-            ui.checkbox(&mut state.dot_grid, "Show Dot Grid");
             ui.checkbox(&mut state.center_view, "Center View");
             ui.checkbox(&mut state.immutable, "Immutable");
-            ui.checkbox(&mut state.snap, "Snap to Grid");
             ui.horizontal(|ui| {
                 ui.label("Flow:");
                 ui.radio_value(&mut state.flow, egui::Direction::LeftToRight, "Right");
@@ -599,6 +623,24 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
                     ui.color_edit_button_srgba(&mut state.socket_color);
                 });
             });
+
+            ui.add_space(8.0);
+            ui.label("SNAP CONFIG");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut state.snap_mode, SnapMode::Off, "Off");
+                ui.radio_value(&mut state.snap_mode, SnapMode::Point, "Snap to Point");
+                ui.radio_value(&mut state.snap_mode, SnapMode::Grid, "Snap to Grid");
+            });
+
+            ui.add_space(8.0);
+            ui.label("GRID CONFIG");
+            ui.checkbox(&mut state.dot_grid, "Show Dot Grid");
+            ui.horizontal(|ui| {
+                ui.label("Step:");
+                ui.add(egui::DragValue::new(&mut state.grid_step).range(1.0..=200.0));
+            });
+
+            ui.add_space(8.0);
             ui.label(format!("Scene: {:?}", view.scene_rect));
         });
 }
