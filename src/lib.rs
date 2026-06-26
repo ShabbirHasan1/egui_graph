@@ -45,6 +45,15 @@ pub struct Graph {
     snap: Option<Snap>,
     /// The granularity (in graph-space units) used when snapping.
     snap_step: f32,
+    /// Whether dragged nodes snap to align their edges/centers with other nodes.
+    align: bool,
+    /// Which node features are considered when aligning.
+    align_targets: AlignTargets,
+    /// The screen-pixel distance within which an alignment snaps, or `None` to
+    /// derive it from the style's `interact_radius`.
+    align_threshold: Option<f32>,
+    /// A held modifier that temporarily disables alignment during a drag.
+    align_disable_modifier: egui::Modifiers,
 }
 
 /// How the view responds when the available viewport size changes
@@ -76,6 +85,26 @@ pub enum Snap {
     Round,
     /// Round down (toward negative infinity) to a multiple of the step.
     Floor,
+}
+
+/// Which node features are considered when snap-aligning a dragged selection to
+/// other nodes. See [`Graph::align`] and [`Graph::align_targets`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AlignTargets {
+    /// Align the left/right/top/bottom edges.
+    pub edges: bool,
+    /// Align the horizontal and vertical centers.
+    pub centers: bool,
+    // Follow-up: a `sockets` field for socket-to-socket alignment.
+}
+
+impl Default for AlignTargets {
+    fn default() -> Self {
+        AlignTargets {
+            edges: true,
+            centers: false,
+        }
+    }
 }
 
 /// State related to the graph UI.
@@ -280,6 +309,18 @@ impl Graph {
     pub const DEFAULT_SNAP: Option<Snap> = Some(Snap::Round);
     /// The default snapping granularity, in graph-space units.
     pub const DEFAULT_SNAP_STEP: f32 = 1.0;
+    /// Snap-align is enabled by default.
+    pub const DEFAULT_ALIGN: bool = true;
+    /// By default, alignment considers edges only (centers can feel busy).
+    pub const DEFAULT_ALIGN_TARGETS: AlignTargets = AlignTargets {
+        edges: true,
+        centers: false,
+    };
+    /// The default alignment threshold. `None` derives it from the style's
+    /// `interact_radius`.
+    pub const DEFAULT_ALIGN_THRESHOLD: Option<f32> = None;
+    /// The default modifier held to temporarily disable alignment.
+    pub const DEFAULT_ALIGN_DISABLE_MODIFIER: egui::Modifiers = egui::Modifiers::ALT;
 
     /// Begin building the new graph widget.
     pub fn new(id_src: impl Hash) -> Self {
@@ -301,6 +342,10 @@ impl Graph {
             immutable: false,
             snap: Self::DEFAULT_SNAP,
             snap_step: Self::DEFAULT_SNAP_STEP,
+            align: Self::DEFAULT_ALIGN,
+            align_targets: Self::DEFAULT_ALIGN_TARGETS,
+            align_threshold: Self::DEFAULT_ALIGN_THRESHOLD,
+            align_disable_modifier: Self::DEFAULT_ALIGN_DISABLE_MODIFIER,
         }
     }
 
@@ -413,6 +458,55 @@ impl Graph {
         self
     }
 
+    /// Whether dragged nodes snap to align their edges/centers with other nodes.
+    ///
+    /// When a dragged node (or selection) comes within
+    /// [`align_threshold`](Self::align_threshold) of another node, it snaps
+    /// along that axis so the features in [`align_targets`](Self::align_targets)
+    /// line up. Each axis is decided independently and takes priority over
+    /// [`snap`](Self::snap): an axis that finds an alignment uses it, while an
+    /// axis that doesn't falls back to the snap setting. Hold
+    /// [`align_disable_modifier`](Self::align_disable_modifier) to suppress it.
+    ///
+    /// Default: [`Self::DEFAULT_ALIGN`] (`true`).
+    pub fn align(mut self, align: bool) -> Self {
+        self.align = align;
+        self
+    }
+
+    /// Which node features ([`AlignTargets`]) are considered when aligning.
+    ///
+    /// Default: [`Self::DEFAULT_ALIGN_TARGETS`] (edges and centers).
+    pub fn align_targets(mut self, targets: AlignTargets) -> Self {
+        self.align_targets = targets;
+        self
+    }
+
+    /// The distance (in *screen* pixels) within which an edge or center snaps
+    /// to align.
+    ///
+    /// The value is converted to graph units using the live zoom each frame, so
+    /// the snap "feel" stays constant in pixels across zoom levels. When unset
+    /// (the default), the threshold is derived from the style's
+    /// `interact_radius`.
+    ///
+    /// Default: [`Self::DEFAULT_ALIGN_THRESHOLD`] (`None`).
+    pub fn align_threshold(mut self, threshold: f32) -> Self {
+        self.align_threshold = Some(threshold);
+        self
+    }
+
+    /// The keyboard modifier held to temporarily disable alignment during a
+    /// drag (the axis then falls back to the [`snap`](Self::snap) setting).
+    ///
+    /// Default: [`Self::DEFAULT_ALIGN_DISABLE_MODIFIER`] ([`Modifiers::ALT`]).
+    ///
+    /// [`Modifiers::ALT`]: egui::Modifiers::ALT
+    pub fn align_disable_modifier(mut self, modifier: egui::Modifiers) -> Self {
+        self.align_disable_modifier = modifier;
+        self
+    }
+
     /// Begin showing the Graph.
     ///
     /// Returns a [`GraphResponse`] containing the user's return value,
@@ -521,28 +615,98 @@ impl Graph {
                 );
 
                 // Move all selected nodes by a single delta (skip when
-                // immutable). When snapping, anchor on the pressed node: snap
-                // *its* target to the grid and translate the whole selection by
-                // the same offset. This keeps the group rigid (preserving its
-                // relative layout) instead of snapping each node independently,
-                // which distorts the cluster. The per-node snap below skips the
-                // dragged nodes for the same reason.
+                // immutable), keeping the group rigid (preserving its relative
+                // layout) by translating every node by the same offset rather
+                // than snapping each independently. Per axis, snap-align wins if
+                // a within-threshold edge/center is found; otherwise the axis
+                // falls back to snapping the pressed node's target to the grid.
+                // The per-node snap below skips the dragged nodes for the same
+                // (rigidity) reason.
                 if !self.immutable && interaction.drag_nodes_delta != egui::Vec2::ZERO {
                     if let Some(pressed) = gmem.pressed.as_ref() {
                         if let PressAction::DragNodes {
                             node: Some(pressed_node),
                         } = &pressed.action
                         {
-                            let delta = match self.snap {
-                                Some(snap) => match layout.get(&pressed_node.id) {
-                                    Some(&current) => {
-                                        let target = current + interaction.drag_nodes_delta;
-                                        snap_pos(snap, self.snap_step, target) - current
-                                    }
-                                    None => interaction.drag_nodes_delta,
-                                },
-                                None => interaction.drag_nodes_delta,
+                            let raw = interaction.drag_nodes_delta;
+
+                            // The alignment threshold is configured in screen
+                            // pixels; convert it to graph units via the live
+                            // zoom so the snap zone stays a constant on-screen
+                            // size. Guard a missing/degenerate transform.
+                            let scale = ui
+                                .ctx()
+                                .layer_transform_to_global(ui.layer_id())
+                                .map(|t| t.scaling)
+                                .filter(|s| s.is_finite() && *s > 0.0)
+                                .unwrap_or(1.0);
+                            let modifiers = ui.input(|i| i.modifiers);
+                            let align_on =
+                                self.align && !modifiers.contains(self.align_disable_modifier);
+                            let threshold_px = self
+                                .align_threshold
+                                .filter(|t| t.is_finite() && *t > 0.0)
+                                .unwrap_or_else(|| ui.style().interaction.interact_radius);
+                            let threshold = threshold_px / scale;
+
+                            // Per-axis alignment of the dragged group's bounding
+                            // box to the surrounding (non-selected) nodes.
+                            let (adj_x, adj_y) = if align_on {
+                                let selected_rects: Vec<egui::Rect> = gmem
+                                    .selection
+                                    .nodes
+                                    .iter()
+                                    .filter_map(|id| {
+                                        let pos = *layout.get(id)?;
+                                        let size = *gmem.node_sizes.get(id)?;
+                                        Some(egui::Rect::from_min_size(pos, size))
+                                    })
+                                    .collect();
+                                // Sort references by id for deterministic
+                                // tie-breaks (HashMap order is unstable).
+                                let mut refs: Vec<(NodeId, egui::Rect)> = layout
+                                    .iter()
+                                    .filter(|(id, _)| !gmem.selection.nodes.contains(id))
+                                    .filter_map(|(id, &pos)| {
+                                        let size = *gmem.node_sizes.get(id)?;
+                                        Some((*id, egui::Rect::from_min_size(pos, size)))
+                                    })
+                                    .collect();
+                                refs.sort_by_key(|(id, _)| *id);
+                                let reference_rects: Vec<egui::Rect> =
+                                    refs.into_iter().map(|(_, r)| r).collect();
+                                align_adjust(
+                                    self.align_targets,
+                                    &selected_rects,
+                                    &reference_rects,
+                                    raw,
+                                    threshold,
+                                )
+                            } else {
+                                (None, None)
                             };
+
+                            // Combine per axis: alignment, else snap fallback of
+                            // the anchor's target (equivalent to the previous
+                            // `snap_pos(..) - current` math, applied per axis).
+                            let anchor = layout.get(&pressed_node.id).copied();
+                            let snap = self.snap;
+                            let snap_step = self.snap_step;
+                            let axis =
+                                |adj: Option<f32>, raw_a: f32, anchor_a: Option<f32>| match adj {
+                                    Some(a) => raw_a + a,
+                                    None => match (snap, anchor_a) {
+                                        (Some(snap), Some(c)) => {
+                                            snap_f32(snap, snap_step, c + raw_a) - c
+                                        }
+                                        _ => raw_a,
+                                    },
+                                };
+                            let delta = egui::vec2(
+                                axis(adj_x, raw.x, anchor.map(|p| p.x)),
+                                axis(adj_y, raw.y, anchor.map(|p| p.y)),
+                            );
+
                             for &n_id in &gmem.selection.nodes {
                                 if let Some(pos) = layout.get_mut(&n_id) {
                                     *pos += delta;
@@ -1248,6 +1412,69 @@ pub fn snap_vec(snap: Snap, step: f32, v: egui::Vec2) -> egui::Vec2 {
     egui::vec2(snap_f32(snap, step, v.x), snap_f32(snap, step, v.y))
 }
 
+/// The per-axis adjustment to add to a drag delta so the dragged group snaps to
+/// align with surrounding nodes.
+///
+/// The dragged group's bounding box (the union of `selected_rects`) is moved by
+/// `raw_delta`, then each axis is matched against the `reference_rects`: edges
+/// are compared with edges and centers with centers (per `targets`), and the
+/// closest candidate within `threshold` (in graph units) wins. Returns `None`
+/// on an axis with no candidate within range.
+fn align_adjust(
+    targets: AlignTargets,
+    selected_rects: &[egui::Rect],
+    reference_rects: &[egui::Rect],
+    raw_delta: egui::Vec2,
+    threshold: f32,
+) -> (Option<f32>, Option<f32>) {
+    if selected_rects.is_empty()
+        || reference_rects.is_empty()
+        || !threshold.is_finite()
+        || threshold <= 0.0
+        || !(targets.edges || targets.centers)
+    {
+        return (None, None);
+    }
+
+    // The dragged group's bounding box at the target (post-delta) position.
+    let mut bbox = selected_rects[0];
+    for r in &selected_rects[1..] {
+        bbox = bbox.union(*r);
+    }
+    let target = bbox.translate(raw_delta);
+
+    // Keep the smallest within-threshold adjustment (`reference - dragged`) for
+    // an axis. `dragged + adjust == reference`, so the edges/centers coincide.
+    let consider = |best: &mut Option<f32>, dragged: f32, reference: f32| {
+        let adjust = reference - dragged;
+        if adjust.abs() <= threshold && best.map_or(true, |b| adjust.abs() < b.abs()) {
+            *best = Some(adjust);
+        }
+    };
+
+    let mut adj_x = None;
+    let mut adj_y = None;
+    for r in reference_rects {
+        if targets.edges {
+            // Any dragged x-edge may align to any reference x-edge (covers
+            // both same-edge alignment and edge-to-edge "touching").
+            consider(&mut adj_x, target.min.x, r.min.x);
+            consider(&mut adj_x, target.min.x, r.max.x);
+            consider(&mut adj_x, target.max.x, r.min.x);
+            consider(&mut adj_x, target.max.x, r.max.x);
+            consider(&mut adj_y, target.min.y, r.min.y);
+            consider(&mut adj_y, target.min.y, r.max.y);
+            consider(&mut adj_y, target.max.y, r.min.y);
+            consider(&mut adj_y, target.max.y, r.max.y);
+        }
+        if targets.centers {
+            consider(&mut adj_x, target.center().x, r.center().x);
+            consider(&mut adj_y, target.center().y, r.center().y);
+        }
+    }
+    (adj_x, adj_y)
+}
+
 /// Short-hand for retrieving access to the graph's temporary memory from the `Ui`.
 fn memory(ui: &egui::Ui, graph_id: egui::Id) -> Arc<Mutex<GraphTempMemory>> {
     ui.ctx().data_mut(|d| {
@@ -1258,7 +1485,9 @@ fn memory(ui: &egui::Ui, graph_id: egui::Id) -> Arc<Mutex<GraphTempMemory>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dot_grid_step, maintain_zoom_scene_rect, snap_f32, Snap};
+    use super::{
+        align_adjust, dot_grid_step, maintain_zoom_scene_rect, snap_f32, AlignTargets, Snap,
+    };
     use egui::{Rangef, Rect, Vec2};
 
     /// The scale egui's `Scene` would apply when fitting `scene_rect` into a
@@ -1378,5 +1607,152 @@ mod tests {
         // Non-finite input passes straight through.
         assert!(snap_f32(Snap::Round, 1.0, f32::INFINITY).is_infinite());
         assert!(snap_f32(Snap::Round, 1.0, f32::NAN).is_nan());
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h))
+    }
+
+    const EDGES: AlignTargets = AlignTargets {
+        edges: true,
+        centers: false,
+    };
+    const CENTERS: AlignTargets = AlignTargets {
+        edges: false,
+        centers: true,
+    };
+
+    #[test]
+    fn align_no_candidates() {
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)];
+        // No reference nodes.
+        assert_eq!(
+            align_adjust(EDGES, &sel, &[], Vec2::ZERO, 5.0),
+            (None, None)
+        );
+        // Empty selection.
+        let refs = [rect(0.0, 0.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &[], &refs, Vec2::ZERO, 5.0),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn align_edge_within_and_beyond_threshold() {
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)];
+        // Left edge 2 away on x, far on y -> aligns x only.
+        let near = [rect(2.0, 100.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &near, Vec2::ZERO, 5.0),
+            (Some(2.0), None)
+        );
+        // All edges beyond threshold -> no adjustment.
+        let far = [rect(20.0, 200.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &far, Vec2::ZERO, 5.0),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn align_touching_edge() {
+        // Dragged right edge (10) snaps to reference left edge (12).
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)];
+        let refs = [rect(12.0, 100.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0),
+            (Some(2.0), None)
+        );
+    }
+
+    #[test]
+    fn align_closest_candidate_wins() {
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)];
+        // Nearer left edge (2) wins over the farther one (4).
+        let refs = [rect(4.0, 100.0, 10.0, 10.0), rect(2.0, 200.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0).0,
+            Some(2.0)
+        );
+    }
+
+    #[test]
+    fn align_axes_independent() {
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)];
+        let x_only = [rect(3.0, 200.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &x_only, Vec2::ZERO, 5.0),
+            (Some(3.0), None)
+        );
+        let y_only = [rect(200.0, 3.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &y_only, Vec2::ZERO, 5.0),
+            (None, Some(3.0))
+        );
+    }
+
+    #[test]
+    fn align_centers_only() {
+        // Wide dragged vs narrow reference: centers coincide (0), edges out of range.
+        let sel = [rect(0.0, 0.0, 20.0, 10.0)]; // center x = 10
+        let refs = [rect(6.0, 100.0, 8.0, 10.0)]; // center x = 10, edges 6/14
+        assert_eq!(
+            align_adjust(CENTERS, &sel, &refs, Vec2::ZERO, 5.0),
+            (Some(0.0), None)
+        );
+        // Edges-only finds nothing in the same arrangement.
+        assert_eq!(
+            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn align_uses_group_bbox_union() {
+        // A 2-node group; only the union's far edge (30) is near the reference,
+        // so a single-node bbox (right edge 10) would miss it.
+        let sel = [rect(0.0, 0.0, 10.0, 10.0), rect(20.0, 0.0, 10.0, 10.0)];
+        let refs = [rect(28.0, 200.0, 10.0, 10.0)]; // left edge 28
+        assert_eq!(
+            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0),
+            (Some(-2.0), None)
+        );
+    }
+
+    #[test]
+    fn align_applies_raw_delta() {
+        // After moving +100 on x, the dragged left edge (100) aligns to 102.
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)];
+        let refs = [rect(102.0, 100.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &refs, egui::vec2(100.0, 0.0), 5.0),
+            (Some(2.0), None)
+        );
+    }
+
+    #[test]
+    fn align_threshold_guards() {
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)];
+        let refs = [rect(0.0, 0.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 0.0),
+            (None, None)
+        );
+        assert_eq!(
+            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, f32::NAN),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn align_deterministic_tie_break() {
+        // Two equidistant references; with a fixed order the first one wins.
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)];
+        let refs = [rect(-2.0, 100.0, 10.0, 10.0), rect(2.0, 200.0, 10.0, 10.0)];
+        assert_eq!(
+            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0).0,
+            Some(-2.0)
+        );
     }
 }
