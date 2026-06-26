@@ -71,6 +71,8 @@ struct State {
     align_centers: bool,
     align_threshold: f32,
     align_guides: bool,
+    /// Which node feature the "Align Selection" button unifies.
+    align_by: egui_graph::AlignBy,
 }
 
 #[derive(Default)]
@@ -148,6 +150,7 @@ impl App {
             align_centers: false,
             align_threshold: 5.0,
             align_guides: true,
+            align_by: egui_graph::AlignBy::Min,
         };
         let view = Default::default();
         App { view, state }
@@ -668,6 +671,31 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
             ui.horizontal(|ui| {
                 ui.label("Threshold (px):");
                 ui.add(egui::DragValue::new(&mut state.align_threshold).range(0.0..=50.0));
+            });
+            // One-shot: align the selection onto an inferred axis. The axis is
+            // inferred from the selection's spread; "Align by" picks the feature
+            // (edges vs centers) that is unified. Disabled for < 2 nodes.
+            ui.horizontal(|ui| {
+                ui.label("Align by:");
+                ui.radio_value(&mut state.align_by, egui_graph::AlignBy::Min, "Min");
+                ui.radio_value(&mut state.align_by, egui_graph::AlignBy::Center, "Center");
+                ui.radio_value(&mut state.align_by, egui_graph::AlignBy::Max, "Max");
+            });
+            let can_align = state.interaction.selection.nodes.len() >= 2;
+            ui.add_enabled_ui(can_align, |ui| {
+                if ui.button("Align Selection").clicked() {
+                    let ids: Vec<egui_graph::NodeId> = state
+                        .interaction
+                        .selection
+                        .nodes
+                        .iter()
+                        .map(|idx| egui_graph::NodeId::from_u64(idx.index() as u64))
+                        .collect();
+                    let by = state.align_by;
+                    egui_graph::with_graph_memory(ui.ctx(), graph_id(), |gmem| {
+                        egui_graph::align_nodes(&mut view.layout, ids, gmem.node_sizes(), by, None);
+                    });
+                }
             });
 
             ui.add_space(8.0);

@@ -113,6 +113,30 @@ impl Default for AlignTargets {
     }
 }
 
+/// The line a selection of nodes is aligned into by [`align_nodes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Alignment {
+    /// Nodes share an x coordinate, forming a vertical column.
+    Column,
+    /// Nodes share a y coordinate, forming a horizontal row.
+    Row,
+}
+
+/// Which feature of each node [`align_nodes`] unifies onto the common line.
+///
+/// For a [`Alignment::Column`] this selects the left edges / centers / right
+/// edges; for a [`Alignment::Row`], the top edges / centers / bottom edges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum AlignBy {
+    /// Align the top-left corners (the stored positions). Ignores node sizes.
+    #[default]
+    Min,
+    /// Align the node centers.
+    Center,
+    /// Align the bottom-right corners.
+    Max,
+}
+
 /// State related to the graph UI.
 #[derive(Clone, Default)]
 pub struct GraphTempMemory {
@@ -1462,6 +1486,102 @@ pub fn snap_vec(snap: Snap, step: f32, v: egui::Vec2) -> egui::Vec2 {
     egui::vec2(snap_f32(snap, step, v.x), snap_f32(snap, step, v.y))
 }
 
+/// Align a selection of nodes onto a common line, tidying up the layout.
+///
+/// The chosen feature (`by`) of each node is unified onto the *mean* of that
+/// feature: e.g. with [`AlignBy::Center`] the nodes' centers all move onto the
+/// average center. When `alignment` is `None`, the orientation is inferred from
+/// the spread of the nodes' centers - nodes spread more vertically become a
+/// [`Alignment::Column`] (shared x), otherwise a [`Alignment::Row`] (shared y).
+///
+/// `sizes` (e.g. from [`GraphTempMemory::node_sizes`]) is consulted only for
+/// [`AlignBy::Center`] and [`AlignBy::Max`]; a node missing from `sizes` is
+/// treated as zero-sized. Nodes absent from `layout`, or whose position is
+/// non-finite, are ignored. Returns the [`Alignment`] applied, or `None` if
+/// fewer than two nodes resolve (in which case `layout` is left untouched).
+///
+/// Positions are written exactly as computed. Callers that snap node positions
+/// (e.g. via [`Graph::snap`]) need not snap the result themselves: rendering the
+/// graph re-snaps every node to the grid, so a fractional mean lands on the grid
+/// on the same frame.
+pub fn align_nodes(
+    layout: &mut Layout,
+    nodes: impl IntoIterator<Item = NodeId>,
+    sizes: &HashMap<NodeId, egui::Vec2>,
+    by: AlignBy,
+    alignment: Option<Alignment>,
+) -> Option<Alignment> {
+    // Resolve the nodes that are actually present with a finite position.
+    let resolved: Vec<(NodeId, egui::Pos2, egui::Vec2)> = nodes
+        .into_iter()
+        .filter_map(|id| {
+            let pos = *layout.get(&id)?;
+            if !pos.is_finite() {
+                return None;
+            }
+            let size = sizes.get(&id).copied().unwrap_or(egui::Vec2::ZERO);
+            Some((id, pos, size))
+        })
+        .collect();
+    if resolved.len() < 2 {
+        return None;
+    }
+
+    // The fraction of a node's size added to its top-left to reach the feature.
+    let frac = match by {
+        AlignBy::Min => 0.0,
+        AlignBy::Center => 0.5,
+        AlignBy::Max => 1.0,
+    };
+    let feature = |pos: egui::Pos2, size: egui::Vec2| pos + size * frac;
+
+    // Infer the orientation from the centers' spread when not given.
+    let alignment =
+        alignment.unwrap_or_else(|| infer_alignment(resolved.iter().map(|&(_, p, s)| p + s * 0.5)));
+    let coord = |p: egui::Pos2| match alignment {
+        Alignment::Column => p.x,
+        Alignment::Row => p.y,
+    };
+
+    // The shared line is the mean of the feature on the unified axis.
+    let sum: f32 = resolved.iter().map(|&(_, p, s)| coord(feature(p, s))).sum();
+    let target = sum / resolved.len() as f32;
+
+    // Solve each node's top-left so its feature lands on `target`.
+    for (id, _, size) in resolved {
+        if let Some(pos) = layout.get_mut(&id) {
+            match alignment {
+                Alignment::Column => pos.x = target - size.x * frac,
+                Alignment::Row => pos.y = target - size.y * frac,
+            }
+        }
+    }
+    Some(alignment)
+}
+
+/// Infer the orientation to align a set of points into from their spread: a
+/// wider vertical spread suggests a [`Alignment::Column`] (unify x), otherwise a
+/// [`Alignment::Row`] (unify y). Non-finite points are ignored; ties and the
+/// degenerate all-coincident case resolve to [`Alignment::Column`].
+fn infer_alignment(points: impl IntoIterator<Item = egui::Pos2>) -> Alignment {
+    let mut min = egui::pos2(f32::INFINITY, f32::INFINITY);
+    let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for p in points {
+        if !p.is_finite() {
+            continue;
+        }
+        min = min.min(p);
+        max = max.max(p);
+    }
+    let spread = max - min;
+    // `>=` (and `false` for the NaN no-finite-points case) defaults to a column.
+    if spread.y >= spread.x {
+        Alignment::Column
+    } else {
+        Alignment::Row
+    }
+}
+
 /// A matched alignment on one axis: how far to nudge the drag delta, and where
 /// (and over what perpendicular span) to draw the guide line.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1596,9 +1716,11 @@ fn memory(ui: &egui::Ui, graph_id: egui::Id) -> Arc<Mutex<GraphTempMemory>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        align_adjust, dot_grid_step, maintain_zoom_scene_rect, snap_f32, AlignTargets, Snap,
+        align_adjust, align_nodes, dot_grid_step, infer_alignment, maintain_zoom_scene_rect,
+        snap_f32, AlignBy, AlignTargets, Alignment, Layout, NodeId, Snap,
     };
     use egui::{Rangef, Rect, Vec2};
+    use std::collections::HashMap;
 
     /// The scale egui's `Scene` would apply when fitting `scene_rect` into a
     /// viewport of `size` (the binding/letterbox axis).
@@ -1869,5 +1991,116 @@ mod tests {
         assert_eq!(x.pos, 2.0); // the reference left edge
         assert_eq!(x.span, Rangef::new(0.0, 28.0));
         assert!(y.is_none());
+    }
+
+    fn pos(x: f32, y: f32) -> egui::Pos2 {
+        egui::pos2(x, y)
+    }
+
+    #[test]
+    fn infer_alignment_from_spread() {
+        // Spread mostly in y -> a vertical column (unify x).
+        let column = [pos(0.0, 0.0), pos(1.0, 50.0), pos(-1.0, 100.0)];
+        assert_eq!(infer_alignment(column), Alignment::Column);
+        // Spread mostly in x -> a horizontal row (unify y).
+        let row = [pos(0.0, 0.0), pos(50.0, 1.0), pos(100.0, -1.0)];
+        assert_eq!(infer_alignment(row), Alignment::Row);
+        // Ties (here, all coincident) default to a column.
+        let tied = [pos(5.0, 5.0), pos(5.0, 5.0)];
+        assert_eq!(infer_alignment(tied), Alignment::Column);
+        // Non-finite points are ignored, leaving a clear vertical spread.
+        let with_nan = [pos(f32::NAN, f32::NAN), pos(0.0, 0.0), pos(0.0, 80.0)];
+        assert_eq!(infer_alignment(with_nan), Alignment::Column);
+    }
+
+    /// Build a layout/sizes pair from `(id, x, y, w, h)` rows.
+    fn nodes(rows: &[(u64, f32, f32, f32, f32)]) -> (Layout, HashMap<NodeId, Vec2>) {
+        let mut layout = Layout::new();
+        let mut sizes = HashMap::new();
+        for &(id, x, y, w, h) in rows {
+            let id = NodeId::from_u64(id);
+            layout.insert(id, pos(x, y));
+            sizes.insert(id, egui::vec2(w, h));
+        }
+        (layout, sizes)
+    }
+
+    #[test]
+    fn align_nodes_centers_to_mean() {
+        // A vertical scatter of differing widths; centers should unify to their
+        // mean x (centers at 5, 11, 8 -> mean 8), each solved back to top-left.
+        let (mut layout, sizes) = nodes(&[
+            (0, 0.0, 0.0, 10.0, 10.0),
+            (1, 1.0, 50.0, 20.0, 10.0),
+            (2, 3.0, 100.0, 10.0, 10.0),
+        ]);
+        let ids = [0, 1, 2].map(NodeId::from_u64);
+        assert_eq!(
+            align_nodes(&mut layout, ids, &sizes, AlignBy::Center, None),
+            Some(Alignment::Column),
+        );
+        for (id, w) in [(0u64, 10.0), (1, 20.0), (2, 10.0)] {
+            let p = layout[&NodeId::from_u64(id)];
+            assert!((p.x + w / 2.0 - 8.0).abs() < 1e-4, "center x of {id}");
+        }
+        // The off-axis (y) is left untouched.
+        assert_eq!(layout[&NodeId::from_u64(1)].y, 50.0);
+    }
+
+    #[test]
+    fn align_nodes_min_and_max() {
+        let rows = [(0u64, 0.0, 0.0, 10.0, 10.0), (1, 4.0, 80.0, 30.0, 10.0)];
+        // Min unifies the top-left x to its mean (0 and 4 -> 2).
+        let (mut layout, sizes) = nodes(&rows);
+        let ids = [0, 1].map(NodeId::from_u64);
+        align_nodes(&mut layout, ids, &sizes, AlignBy::Min, None);
+        assert!((layout[&NodeId::from_u64(0)].x - 2.0).abs() < 1e-4);
+        assert!((layout[&NodeId::from_u64(1)].x - 2.0).abs() < 1e-4);
+        // Max unifies the right edges (10 and 34 -> mean 22).
+        let (mut layout, sizes) = nodes(&rows);
+        align_nodes(&mut layout, ids, &sizes, AlignBy::Max, None);
+        assert!((layout[&NodeId::from_u64(0)].x + 10.0 - 22.0).abs() < 1e-4);
+        assert!((layout[&NodeId::from_u64(1)].x + 30.0 - 22.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn align_nodes_explicit_overrides_inference() {
+        // A vertical scatter would infer a column, but Row is forced (unify y).
+        let (mut layout, sizes) = nodes(&[(0, 0.0, 0.0, 10.0, 10.0), (1, 1.0, 100.0, 10.0, 10.0)]);
+        let ids = [0, 1].map(NodeId::from_u64);
+        assert_eq!(
+            align_nodes(&mut layout, ids, &sizes, AlignBy::Min, Some(Alignment::Row)),
+            Some(Alignment::Row),
+        );
+        assert_eq!(layout[&NodeId::from_u64(0)].y, 50.0);
+        assert_eq!(layout[&NodeId::from_u64(1)].y, 50.0);
+    }
+
+    #[test]
+    fn align_nodes_needs_two_nodes() {
+        let (mut layout, sizes) = nodes(&[(0, 7.0, 7.0, 10.0, 10.0)]);
+        let before = layout.clone();
+        // A lone node, and a missing node, both resolve to a no-op `None`.
+        assert_eq!(
+            align_nodes(
+                &mut layout,
+                [NodeId::from_u64(0)],
+                &sizes,
+                AlignBy::Center,
+                None
+            ),
+            None,
+        );
+        assert_eq!(
+            align_nodes(
+                &mut layout,
+                [NodeId::from_u64(0), NodeId::from_u64(99)],
+                &sizes,
+                AlignBy::Center,
+                None,
+            ),
+            None,
+        );
+        assert_eq!(layout, before);
     }
 }
