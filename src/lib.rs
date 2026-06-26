@@ -54,6 +54,12 @@ pub struct Graph {
     align_threshold: Option<f32>,
     /// A held modifier that temporarily disables alignment during a drag.
     align_disable_modifier: egui::Modifiers,
+    /// Whether to draw a subtle guide line along an edge/center that is
+    /// currently aligning during a drag.
+    align_guides: bool,
+    /// The stroke for alignment guide lines (width in screen pixels), or `None`
+    /// to derive a subtle default from the style.
+    align_guide_stroke: Option<egui::Stroke>,
 }
 
 /// How the view responds when the available viewport size changes
@@ -321,6 +327,10 @@ impl Graph {
     pub const DEFAULT_ALIGN_THRESHOLD: Option<f32> = None;
     /// The default modifier held to temporarily disable alignment.
     pub const DEFAULT_ALIGN_DISABLE_MODIFIER: egui::Modifiers = egui::Modifiers::ALT;
+    /// Subtle alignment guide lines are drawn by default.
+    pub const DEFAULT_ALIGN_GUIDES: bool = true;
+    /// The default guide stroke. `None` derives a subtle stroke from the style.
+    pub const DEFAULT_ALIGN_GUIDE_STROKE: Option<egui::Stroke> = None;
 
     /// Begin building the new graph widget.
     pub fn new(id_src: impl Hash) -> Self {
@@ -346,6 +356,8 @@ impl Graph {
             align_targets: Self::DEFAULT_ALIGN_TARGETS,
             align_threshold: Self::DEFAULT_ALIGN_THRESHOLD,
             align_disable_modifier: Self::DEFAULT_ALIGN_DISABLE_MODIFIER,
+            align_guides: Self::DEFAULT_ALIGN_GUIDES,
+            align_guide_stroke: Self::DEFAULT_ALIGN_GUIDE_STROKE,
         }
     }
 
@@ -507,6 +519,28 @@ impl Graph {
         self
     }
 
+    /// Whether to draw a subtle guide line along an edge/center that is
+    /// currently aligning during a drag.
+    ///
+    /// Default: [`Self::DEFAULT_ALIGN_GUIDES`] (`true`).
+    pub fn align_guides(mut self, guides: bool) -> Self {
+        self.align_guides = guides;
+        self
+    }
+
+    /// The stroke used for alignment guide lines.
+    ///
+    /// The width is interpreted in *screen* pixels (converted to graph units via
+    /// the live zoom, so it stays a constant on-screen thickness). When unset
+    /// (the default), a subtle stroke is derived from the style's selection
+    /// colour.
+    ///
+    /// Default: [`Self::DEFAULT_ALIGN_GUIDE_STROKE`] (`None`).
+    pub fn align_guide_stroke(mut self, stroke: egui::Stroke) -> Self {
+        self.align_guide_stroke = Some(stroke);
+        self
+    }
+
     /// Begin showing the Graph.
     ///
     /// Returns a [`GraphResponse`] containing the user's return value,
@@ -563,6 +597,8 @@ impl Graph {
             let mut select = false;
             let mut closest_socket = None;
             let mut socket_press_released = None;
+            // Alignment guide lines collected during a drag, as (is_x_axis, line).
+            let mut guide_lines: Vec<(bool, AlignLine)> = Vec::new();
 
             // Check for interactions with the scene area.
             let scene_response = ui.response();
@@ -651,7 +687,7 @@ impl Graph {
 
                             // Per-axis alignment of the dragged group's bounding
                             // box to the surrounding (non-selected) nodes.
-                            let (adj_x, adj_y) = if align_on {
+                            let (line_x, line_y) = if align_on {
                                 let selected_rects: Vec<egui::Rect> = gmem
                                     .selection
                                     .nodes
@@ -693,19 +729,28 @@ impl Graph {
                             let snap = self.snap;
                             let snap_step = self.snap_step;
                             let axis =
-                                |adj: Option<f32>, raw_a: f32, anchor_a: Option<f32>| match adj {
-                                    Some(a) => raw_a + a,
-                                    None => match (snap, anchor_a) {
-                                        (Some(snap), Some(c)) => {
-                                            snap_f32(snap, snap_step, c + raw_a) - c
-                                        }
-                                        _ => raw_a,
-                                    },
+                                |line: Option<AlignLine>, raw_a: f32, anchor_a: Option<f32>| {
+                                    match line {
+                                        Some(l) => raw_a + l.adjust,
+                                        None => match (snap, anchor_a) {
+                                            (Some(snap), Some(c)) => {
+                                                snap_f32(snap, snap_step, c + raw_a) - c
+                                            }
+                                            _ => raw_a,
+                                        },
+                                    }
                                 };
                             let delta = egui::vec2(
-                                axis(adj_x, raw.x, anchor.map(|p| p.x)),
-                                axis(adj_y, raw.y, anchor.map(|p| p.y)),
+                                axis(line_x, raw.x, anchor.map(|p| p.x)),
+                                axis(line_y, raw.y, anchor.map(|p| p.y)),
                             );
+
+                            // Record the aligning edges so a subtle guide can be
+                            // drawn along them once the nodes are laid out.
+                            if self.align_guides {
+                                guide_lines.extend(line_x.map(|l| (true, l)));
+                                guide_lines.extend(line_y.map(|l| (false, l)));
+                            }
 
                             for &n_id in &gmem.selection.nodes {
                                 if let Some(pos) = layout.get_mut(&n_id) {
@@ -753,6 +798,11 @@ impl Graph {
             // Paint some subtle dots to check camera movement.
             if self.dot_grid {
                 paint_dot_grid(visible_rect, self.dot_grid_step, ui);
+            }
+
+            // Paint subtle guide lines along edges/centers aligning this frame.
+            if !guide_lines.is_empty() {
+                paint_align_guides(&guide_lines, self.align_guide_stroke, ui);
             }
 
             // Draw the selection area if there is one.
@@ -1412,8 +1462,21 @@ pub fn snap_vec(snap: Snap, step: f32, v: egui::Vec2) -> egui::Vec2 {
     egui::vec2(snap_f32(snap, step, v.x), snap_f32(snap, step, v.y))
 }
 
-/// The per-axis adjustment to add to a drag delta so the dragged group snaps to
-/// align with surrounding nodes.
+/// A matched alignment on one axis: how far to nudge the drag delta, and where
+/// (and over what perpendicular span) to draw the guide line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AlignLine {
+    /// The amount to add to the raw drag delta on this axis so the features
+    /// coincide.
+    adjust: f32,
+    /// The aligned coordinate on this axis (where the guide line sits).
+    pos: f32,
+    /// The perpendicular extent the guide line spans (covering both the dragged
+    /// group and the matched reference node).
+    span: egui::Rangef,
+}
+
+/// Per-axis snap-alignment of a dragged group to the surrounding nodes.
 ///
 /// The dragged group's bounding box (the union of `selected_rects`) is moved by
 /// `raw_delta`, then each axis is matched against the `reference_rects`: edges
@@ -1426,7 +1489,7 @@ fn align_adjust(
     reference_rects: &[egui::Rect],
     raw_delta: egui::Vec2,
     threshold: f32,
-) -> (Option<f32>, Option<f32>) {
+) -> (Option<AlignLine>, Option<AlignLine>) {
     if selected_rects.is_empty()
         || reference_rects.is_empty()
         || !threshold.is_finite()
@@ -1443,36 +1506,83 @@ fn align_adjust(
     }
     let target = bbox.translate(raw_delta);
 
-    // Keep the smallest within-threshold adjustment (`reference - dragged`) for
-    // an axis. `dragged + adjust == reference`, so the edges/centers coincide.
-    let consider = |best: &mut Option<f32>, dragged: f32, reference: f32| {
+    // Keep the smallest within-threshold match (`reference - dragged`) for an
+    // axis, tracking the reference rect so the guide can span both nodes.
+    type Best = Option<(f32, f32, egui::Rect)>; // (adjust, pos, reference rect)
+    let consider = |best: &mut Best, dragged: f32, reference: f32, r: egui::Rect| {
         let adjust = reference - dragged;
-        if adjust.abs() <= threshold && best.map_or(true, |b| adjust.abs() < b.abs()) {
-            *best = Some(adjust);
+        if adjust.abs() <= threshold && best.map_or(true, |(b, _, _)| adjust.abs() < b.abs()) {
+            *best = Some((adjust, reference, r));
         }
     };
 
-    let mut adj_x = None;
-    let mut adj_y = None;
-    for r in reference_rects {
+    let mut best_x: Best = None;
+    let mut best_y: Best = None;
+    for &r in reference_rects {
         if targets.edges {
             // Any dragged x-edge may align to any reference x-edge (covers
             // both same-edge alignment and edge-to-edge "touching").
-            consider(&mut adj_x, target.min.x, r.min.x);
-            consider(&mut adj_x, target.min.x, r.max.x);
-            consider(&mut adj_x, target.max.x, r.min.x);
-            consider(&mut adj_x, target.max.x, r.max.x);
-            consider(&mut adj_y, target.min.y, r.min.y);
-            consider(&mut adj_y, target.min.y, r.max.y);
-            consider(&mut adj_y, target.max.y, r.min.y);
-            consider(&mut adj_y, target.max.y, r.max.y);
+            consider(&mut best_x, target.min.x, r.min.x, r);
+            consider(&mut best_x, target.min.x, r.max.x, r);
+            consider(&mut best_x, target.max.x, r.min.x, r);
+            consider(&mut best_x, target.max.x, r.max.x, r);
+            consider(&mut best_y, target.min.y, r.min.y, r);
+            consider(&mut best_y, target.min.y, r.max.y, r);
+            consider(&mut best_y, target.max.y, r.min.y, r);
+            consider(&mut best_y, target.max.y, r.max.y, r);
         }
         if targets.centers {
-            consider(&mut adj_x, target.center().x, r.center().x);
-            consider(&mut adj_y, target.center().y, r.center().y);
+            consider(&mut best_x, target.center().x, r.center().x, r);
+            consider(&mut best_y, target.center().y, r.center().y, r);
         }
     }
-    (adj_x, adj_y)
+
+    // A vertical guide (x-axis match) spans the y extent of both nodes; a
+    // horizontal guide spans their x extent.
+    let line_x = best_x.map(|(adjust, pos, r)| AlignLine {
+        adjust,
+        pos,
+        span: egui::Rangef::new(target.min.y.min(r.min.y), target.max.y.max(r.max.y)),
+    });
+    let line_y = best_y.map(|(adjust, pos, r)| AlignLine {
+        adjust,
+        pos,
+        span: egui::Rangef::new(target.min.x.min(r.min.x), target.max.x.max(r.max.x)),
+    });
+    (line_x, line_y)
+}
+
+/// Paint the subtle alignment guide lines collected during a drag. Each entry
+/// is `(is_x_axis, line)`: an x-axis match draws a vertical line, a y-axis match
+/// a horizontal one. Drawn in graph space; the stroke width is treated as screen
+/// pixels and scaled so the line stays a constant on-screen thickness.
+fn paint_align_guides(
+    lines: &[(bool, AlignLine)],
+    guide_stroke: Option<egui::Stroke>,
+    ui: &egui::Ui,
+) {
+    let scale = ui
+        .ctx()
+        .layer_transform_to_global(ui.layer_id())
+        .map(|t| t.scaling)
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0);
+    // Default to a faint 1px line in the selection colour at reduced opacity.
+    let base = guide_stroke.unwrap_or_else(|| {
+        let color = ui.visuals().selection.stroke.color.gamma_multiply(0.5);
+        egui::Stroke::new(1.0, color)
+    });
+    let stroke = egui::Stroke::new(base.width / scale, base.color);
+    let painter = ui.painter();
+    for &(is_x_axis, line) in lines {
+        if is_x_axis {
+            // Vertical line at x = pos, spanning the y extent.
+            painter.vline(line.pos, line.span, stroke);
+        } else {
+            // Horizontal line at y = pos, spanning the x extent.
+            painter.hline(line.span, line.pos, stroke);
+        }
+    }
 }
 
 /// Short-hand for retrieving access to the graph's temporary memory from the `Ui`.
@@ -1622,20 +1732,26 @@ mod tests {
         centers: true,
     };
 
+    /// `align_adjust` reduced to just the per-axis adjustments, for brevity.
+    fn align(
+        targets: AlignTargets,
+        sel: &[Rect],
+        refs: &[Rect],
+        raw: Vec2,
+        threshold: f32,
+    ) -> (Option<f32>, Option<f32>) {
+        let (x, y) = align_adjust(targets, sel, refs, raw, threshold);
+        (x.map(|l| l.adjust), y.map(|l| l.adjust))
+    }
+
     #[test]
     fn align_no_candidates() {
         let sel = [rect(0.0, 0.0, 10.0, 10.0)];
         // No reference nodes.
-        assert_eq!(
-            align_adjust(EDGES, &sel, &[], Vec2::ZERO, 5.0),
-            (None, None)
-        );
+        assert_eq!(align(EDGES, &sel, &[], Vec2::ZERO, 5.0), (None, None));
         // Empty selection.
         let refs = [rect(0.0, 0.0, 10.0, 10.0)];
-        assert_eq!(
-            align_adjust(EDGES, &[], &refs, Vec2::ZERO, 5.0),
-            (None, None)
-        );
+        assert_eq!(align(EDGES, &[], &refs, Vec2::ZERO, 5.0), (None, None));
     }
 
     #[test]
@@ -1644,15 +1760,12 @@ mod tests {
         // Left edge 2 away on x, far on y -> aligns x only.
         let near = [rect(2.0, 100.0, 10.0, 10.0)];
         assert_eq!(
-            align_adjust(EDGES, &sel, &near, Vec2::ZERO, 5.0),
+            align(EDGES, &sel, &near, Vec2::ZERO, 5.0),
             (Some(2.0), None)
         );
         // All edges beyond threshold -> no adjustment.
         let far = [rect(20.0, 200.0, 10.0, 10.0)];
-        assert_eq!(
-            align_adjust(EDGES, &sel, &far, Vec2::ZERO, 5.0),
-            (None, None)
-        );
+        assert_eq!(align(EDGES, &sel, &far, Vec2::ZERO, 5.0), (None, None));
     }
 
     #[test]
@@ -1661,7 +1774,7 @@ mod tests {
         let sel = [rect(0.0, 0.0, 10.0, 10.0)];
         let refs = [rect(12.0, 100.0, 10.0, 10.0)];
         assert_eq!(
-            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0),
+            align(EDGES, &sel, &refs, Vec2::ZERO, 5.0),
             (Some(2.0), None)
         );
     }
@@ -1671,10 +1784,7 @@ mod tests {
         let sel = [rect(0.0, 0.0, 10.0, 10.0)];
         // Nearer left edge (2) wins over the farther one (4).
         let refs = [rect(4.0, 100.0, 10.0, 10.0), rect(2.0, 200.0, 10.0, 10.0)];
-        assert_eq!(
-            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0).0,
-            Some(2.0)
-        );
+        assert_eq!(align(EDGES, &sel, &refs, Vec2::ZERO, 5.0).0, Some(2.0));
     }
 
     #[test]
@@ -1682,12 +1792,12 @@ mod tests {
         let sel = [rect(0.0, 0.0, 10.0, 10.0)];
         let x_only = [rect(3.0, 200.0, 10.0, 10.0)];
         assert_eq!(
-            align_adjust(EDGES, &sel, &x_only, Vec2::ZERO, 5.0),
+            align(EDGES, &sel, &x_only, Vec2::ZERO, 5.0),
             (Some(3.0), None)
         );
         let y_only = [rect(200.0, 3.0, 10.0, 10.0)];
         assert_eq!(
-            align_adjust(EDGES, &sel, &y_only, Vec2::ZERO, 5.0),
+            align(EDGES, &sel, &y_only, Vec2::ZERO, 5.0),
             (None, Some(3.0))
         );
     }
@@ -1698,14 +1808,11 @@ mod tests {
         let sel = [rect(0.0, 0.0, 20.0, 10.0)]; // center x = 10
         let refs = [rect(6.0, 100.0, 8.0, 10.0)]; // center x = 10, edges 6/14
         assert_eq!(
-            align_adjust(CENTERS, &sel, &refs, Vec2::ZERO, 5.0),
+            align(CENTERS, &sel, &refs, Vec2::ZERO, 5.0),
             (Some(0.0), None)
         );
         // Edges-only finds nothing in the same arrangement.
-        assert_eq!(
-            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0),
-            (None, None)
-        );
+        assert_eq!(align(EDGES, &sel, &refs, Vec2::ZERO, 5.0), (None, None));
     }
 
     #[test]
@@ -1715,7 +1822,7 @@ mod tests {
         let sel = [rect(0.0, 0.0, 10.0, 10.0), rect(20.0, 0.0, 10.0, 10.0)];
         let refs = [rect(28.0, 200.0, 10.0, 10.0)]; // left edge 28
         assert_eq!(
-            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0),
+            align(EDGES, &sel, &refs, Vec2::ZERO, 5.0),
             (Some(-2.0), None)
         );
     }
@@ -1726,7 +1833,7 @@ mod tests {
         let sel = [rect(0.0, 0.0, 10.0, 10.0)];
         let refs = [rect(102.0, 100.0, 10.0, 10.0)];
         assert_eq!(
-            align_adjust(EDGES, &sel, &refs, egui::vec2(100.0, 0.0), 5.0),
+            align(EDGES, &sel, &refs, egui::vec2(100.0, 0.0), 5.0),
             (Some(2.0), None)
         );
     }
@@ -1735,12 +1842,9 @@ mod tests {
     fn align_threshold_guards() {
         let sel = [rect(0.0, 0.0, 10.0, 10.0)];
         let refs = [rect(0.0, 0.0, 10.0, 10.0)];
+        assert_eq!(align(EDGES, &sel, &refs, Vec2::ZERO, 0.0), (None, None));
         assert_eq!(
-            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 0.0),
-            (None, None)
-        );
-        assert_eq!(
-            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, f32::NAN),
+            align(EDGES, &sel, &refs, Vec2::ZERO, f32::NAN),
             (None, None)
         );
     }
@@ -1750,9 +1854,20 @@ mod tests {
         // Two equidistant references; with a fixed order the first one wins.
         let sel = [rect(0.0, 0.0, 10.0, 10.0)];
         let refs = [rect(-2.0, 100.0, 10.0, 10.0), rect(2.0, 200.0, 10.0, 10.0)];
-        assert_eq!(
-            align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0).0,
-            Some(-2.0)
-        );
+        assert_eq!(align(EDGES, &sel, &refs, Vec2::ZERO, 5.0).0, Some(-2.0));
+    }
+
+    #[test]
+    fn align_line_geometry() {
+        // Left edges align (adjust +2); the vertical guide sits at the aligned
+        // coordinate and spans both nodes' y extents.
+        let sel = [rect(0.0, 0.0, 10.0, 10.0)]; // y: 0..10
+        let refs = [rect(2.0, 20.0, 10.0, 8.0)]; // left edge 2, y: 20..28
+        let (x, y) = align_adjust(EDGES, &sel, &refs, Vec2::ZERO, 5.0);
+        let x = x.expect("x axis should align");
+        assert_eq!(x.adjust, 2.0);
+        assert_eq!(x.pos, 2.0); // the reference left edge
+        assert_eq!(x.span, Rangef::new(0.0, 28.0));
+        assert!(y.is_none());
     }
 }

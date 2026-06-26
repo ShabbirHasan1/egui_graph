@@ -70,6 +70,7 @@ struct State {
     align_edges: bool,
     align_centers: bool,
     align_threshold: f32,
+    align_guides: bool,
 }
 
 #[derive(Default)]
@@ -146,6 +147,7 @@ impl App {
             align_edges: true,
             align_centers: false,
             align_threshold: 5.0,
+            align_guides: true,
         };
         let view = Default::default();
         App { view, state }
@@ -352,6 +354,7 @@ fn graph(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
             centers: state.align_centers,
         })
         .align_threshold(state.align_threshold)
+        .align_guides(state.align_guides)
         .show(view, ui, |ui, show| {
             show.nodes(ui, |nctx, ui| nodes(nctx, ui, state))
                 .edges(ui, |ectx, ui| {
@@ -660,6 +663,7 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
             ui.horizontal(|ui| {
                 ui.checkbox(&mut state.align_edges, "Edges");
                 ui.checkbox(&mut state.align_centers, "Centers");
+                ui.checkbox(&mut state.align_guides, "Guides");
             });
             ui.horizontal(|ui| {
                 ui.label("Threshold (px):");
