@@ -499,13 +499,32 @@ impl Graph {
                     gmem.pressed.as_ref(),
                 );
 
-                // Apply drag delta to all selected nodes (skip when immutable).
+                // Move all selected nodes by a single delta (skip when
+                // immutable). When snapping, anchor on the pressed node: snap
+                // *its* target to the grid and translate the whole selection by
+                // the same offset. This keeps the group rigid (preserving its
+                // relative layout) instead of snapping each node independently,
+                // which distorts the cluster. The per-node snap below skips the
+                // dragged nodes for the same reason.
                 if !self.immutable && interaction.drag_nodes_delta != egui::Vec2::ZERO {
                     if let Some(pressed) = gmem.pressed.as_ref() {
-                        if let PressAction::DragNodes { .. } = pressed.action {
+                        if let PressAction::DragNodes {
+                            node: Some(pressed_node),
+                        } = &pressed.action
+                        {
+                            let delta = match self.snap {
+                                Some(snap) => match layout.get(&pressed_node.id) {
+                                    Some(&current) => {
+                                        let target = current + interaction.drag_nodes_delta;
+                                        snap_pos(snap, self.snap_step, target) - current
+                                    }
+                                    None => interaction.drag_nodes_delta,
+                                },
+                                None => interaction.drag_nodes_delta,
+                            };
                             for &n_id in &gmem.selection.nodes {
                                 if let Some(pos) = layout.get_mut(&n_id) {
-                                    *pos += interaction.drag_nodes_delta;
+                                    *pos += delta;
                                 }
                             }
                         }
@@ -523,8 +542,19 @@ impl Graph {
             // (regardless of pointer presence) and after any drag delta has
             // been applied, so it normalises dragged, auto-laid-out, and
             // deserialized positions alike before the nodes render.
+            //
+            // Nodes in an active drag are skipped: they're translated rigidly
+            // above (anchored on the pressed node) to preserve the selection's
+            // relative layout, so snapping them per-node here would distort it.
             if let Some(snap) = self.snap {
-                for pos in layout.values_mut() {
+                let dragging = matches!(
+                    gmem.pressed.as_ref().map(|p| &p.action),
+                    Some(PressAction::DragNodes { .. })
+                );
+                for (id, pos) in layout.iter_mut() {
+                    if dragging && gmem.selection.nodes.contains(id) {
+                        continue;
+                    }
                     *pos = snap_pos(snap, self.snap_step, *pos);
                 }
             }
