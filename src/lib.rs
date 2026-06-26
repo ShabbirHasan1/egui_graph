@@ -21,6 +21,9 @@ pub mod socket;
 pub struct Graph {
     background: bool,
     dot_grid: bool,
+    /// The base spacing of the dot grid in graph-space units, or `None` to
+    /// derive it from the style's interaction size.
+    dot_grid_step: Option<f32>,
     zoom_range: egui::Rangef,
     max_inner_size: Option<egui::Vec2>,
     center_view: bool,
@@ -37,6 +40,11 @@ pub struct Graph {
     /// structural changes - node positions, edges, and node content remain
     /// view-only while navigation and selection continue to work.
     immutable: bool,
+    /// How node positions and frame sizes are snapped to whole graph-space
+    /// units, or `None` to disable snapping.
+    snap: Option<Snap>,
+    /// The granularity (in graph-space units) used when snapping.
+    snap_step: f32,
 }
 
 /// How the view responds when the available viewport size changes
@@ -53,6 +61,21 @@ pub enum ResizeBehavior {
     ///
     /// [`Scene`]: egui::containers::Scene
     MaintainView,
+}
+
+/// How node positions and frame sizes are snapped to whole graph-space units.
+///
+/// Snapping happens in graph space (egui's [`Scene`][egui::containers::Scene]
+/// applies zoom/pan separately), keeping serialized layouts tidy and nodes
+/// easy to align. "Off" is expressed as `Option<Snap>::None`; see
+/// [`Graph::snap`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub enum Snap {
+    /// Round to the nearest multiple of the step. This is the default.
+    Round,
+    /// Round down (toward negative infinity) to a multiple of the step.
+    Floor,
 }
 
 /// State related to the graph UI.
@@ -179,6 +202,10 @@ pub struct Show<'a> {
     layout: &'a mut Layout,
     /// Whether the graph is in immutable (view-only) mode.
     immutable: bool,
+    /// How frame sizes are snapped, or `None` to disable snapping.
+    snap: Option<Snap>,
+    /// The granularity (in graph-space units) used when snapping.
+    snap_step: f32,
 }
 
 /// Information about the inputs and outputs for a particular node.
@@ -200,6 +227,10 @@ pub struct NodesCtx<'a> {
     layout: &'a mut Layout,
     /// Whether the graph is in immutable (view-only) mode.
     pub immutable: bool,
+    /// How frame sizes are snapped, or `None` to disable snapping.
+    snap: Option<Snap>,
+    /// The granularity (in graph-space units) used when snapping.
+    snap_step: f32,
 }
 
 /// A context to assist with the instantiation of edge widgets.
@@ -244,6 +275,11 @@ impl Graph {
     pub const DEFAULT_CENTER_VIEW: bool = false;
     /// The default [`ResizeBehavior`].
     pub const DEFAULT_RESIZE_BEHAVIOR: ResizeBehavior = ResizeBehavior::MaintainZoom;
+    /// The default snapping mode. Snaps node positions and frame sizes to the
+    /// nearest whole graph-space unit.
+    pub const DEFAULT_SNAP: Option<Snap> = Some(Snap::Round);
+    /// The default snapping granularity, in graph-space units.
+    pub const DEFAULT_SNAP_STEP: f32 = 1.0;
 
     /// Begin building the new graph widget.
     pub fn new(id_src: impl Hash) -> Self {
@@ -255,6 +291,7 @@ impl Graph {
         Self {
             background: true,
             dot_grid: true,
+            dot_grid_step: None,
             zoom_range: Self::DEFAULT_ZOOM_RANGE,
             max_inner_size: None,
             center_view: Self::DEFAULT_CENTER_VIEW,
@@ -262,6 +299,8 @@ impl Graph {
             id,
             selected_nodes: None,
             immutable: false,
+            snap: Self::DEFAULT_SNAP,
+            snap_step: Self::DEFAULT_SNAP_STEP,
         }
     }
 
@@ -277,6 +316,23 @@ impl Graph {
         self
     }
 
+    /// The base spacing of the dot grid, in graph-space units.
+    ///
+    /// The grid is anchored at the origin `(0, 0)` and coarsens in power-of-two
+    /// multiples when zoomed far out (to bound the dots painted per frame).
+    /// Both the dot grid and [`snap`][Self::snap] are anchored at the origin,
+    /// so setting this equal to (or an integer multiple of) [`snap_step`] makes
+    /// snapped nodes land on the grid. The two remain independent - neither is
+    /// derived from the other.
+    ///
+    /// Default: `None`, deriving the spacing from the style's interaction size.
+    ///
+    /// [`snap_step`]: Self::snap_step
+    pub fn dot_grid_step(mut self, step: f32) -> Self {
+        self.dot_grid_step = Some(step);
+        self
+    }
+
     /// Set the allowed zoom range.
     ///
     /// A zoom < 1.0 zooms out, while a zoom > 1.0 zooms in.
@@ -287,7 +343,7 @@ impl Graph {
         self
     }
 
-    /// Set the maximum size of the scene's inner [`Ui`] that will be created.
+    /// Set the maximum size of the scene's inner [`Ui`](egui::Ui) that will be created.
     #[inline]
     pub fn max_inner_size(mut self, max_inner_size: impl Into<egui::Vec2>) -> Self {
         self.max_inner_size = Some(max_inner_size.into());
@@ -329,6 +385,31 @@ impl Graph {
     /// Default: `false`.
     pub fn immutable(mut self, immutable: bool) -> Self {
         self.immutable = immutable;
+        self
+    }
+
+    /// How node positions and frame sizes are snapped to whole graph-space
+    /// units, or `None` to disable snapping entirely.
+    ///
+    /// Snapping keeps serialized layouts tidy, makes nodes easier to align,
+    /// and avoids sub-pixel rendering at pixel-perfect zoom. Positions honour
+    /// the chosen mode; recorded frame sizes always round to nearest (never
+    /// floor) so they can't shrink below the rendered frame.
+    ///
+    /// Default: [`Self::DEFAULT_SNAP`] ([`Snap::Round`]).
+    pub fn snap(mut self, snap: Option<Snap>) -> Self {
+        self.snap = snap;
+        self
+    }
+
+    /// The granularity (in graph-space units) used when snapping.
+    ///
+    /// Values `<= 0` (or non-finite) disable snapping for that value. Use a
+    /// coarser step (e.g. `8.0`) to align nodes to a visible grid.
+    ///
+    /// Default: [`Self::DEFAULT_SNAP_STEP`] (`1.0`).
+    pub fn snap_step(mut self, step: f32) -> Self {
+        self.snap_step = step;
         self
     }
 
@@ -439,13 +520,32 @@ impl Graph {
                     gmem.pressed.as_ref(),
                 );
 
-                // Apply drag delta to all selected nodes (skip when immutable).
+                // Move all selected nodes by a single delta (skip when
+                // immutable). When snapping, anchor on the pressed node: snap
+                // *its* target to the grid and translate the whole selection by
+                // the same offset. This keeps the group rigid (preserving its
+                // relative layout) instead of snapping each node independently,
+                // which distorts the cluster. The per-node snap below skips the
+                // dragged nodes for the same reason.
                 if !self.immutable && interaction.drag_nodes_delta != egui::Vec2::ZERO {
                     if let Some(pressed) = gmem.pressed.as_ref() {
-                        if let PressAction::DragNodes { .. } = pressed.action {
+                        if let PressAction::DragNodes {
+                            node: Some(pressed_node),
+                        } = &pressed.action
+                        {
+                            let delta = match self.snap {
+                                Some(snap) => match layout.get(&pressed_node.id) {
+                                    Some(&current) => {
+                                        let target = current + interaction.drag_nodes_delta;
+                                        snap_pos(snap, self.snap_step, target) - current
+                                    }
+                                    None => interaction.drag_nodes_delta,
+                                },
+                                None => interaction.drag_nodes_delta,
+                            };
                             for &n_id in &gmem.selection.nodes {
                                 if let Some(pos) = layout.get_mut(&n_id) {
-                                    *pos += interaction.drag_nodes_delta;
+                                    *pos += delta;
                                 }
                             }
                         }
@@ -459,6 +559,27 @@ impl Graph {
                 socket_press_released = interaction.socket_press_released;
             }
 
+            // Snap node positions to whole graph-space units. Runs every frame
+            // (regardless of pointer presence) and after any drag delta has
+            // been applied, so it normalises dragged, auto-laid-out, and
+            // deserialized positions alike before the nodes render.
+            //
+            // Nodes in an active drag are skipped: they're translated rigidly
+            // above (anchored on the pressed node) to preserve the selection's
+            // relative layout, so snapping them per-node here would distort it.
+            if let Some(snap) = self.snap {
+                let dragging = matches!(
+                    gmem.pressed.as_ref().map(|p| &p.action),
+                    Some(PressAction::DragNodes { .. })
+                );
+                for (id, pos) in layout.iter_mut() {
+                    if dragging && gmem.selection.nodes.contains(id) {
+                        continue;
+                    }
+                    *pos = snap_pos(snap, self.snap_step, *pos);
+                }
+            }
+
             // Paint the background rect.
             let visible_rect = ui.clip_rect();
             if self.background {
@@ -467,7 +588,7 @@ impl Graph {
 
             // Paint some subtle dots to check camera movement.
             if self.dot_grid {
-                paint_dot_grid(visible_rect, ui);
+                paint_dot_grid(visible_rect, self.dot_grid_step, ui);
             }
 
             // Draw the selection area if there is one.
@@ -488,6 +609,8 @@ impl Graph {
                 visited: &mut visited,
                 layout,
                 immutable: self.immutable,
+                snap: self.snap,
+                snap_step: self.snap_step,
             };
 
             // Drop the lock before running the content.
@@ -608,6 +731,8 @@ impl<'a> Show<'a> {
                 ref mut visited,
                 ref mut layout,
                 immutable,
+                snap,
+                snap_step,
                 ..
             } = self;
             let mut ctx = NodesCtx {
@@ -619,6 +744,8 @@ impl<'a> Show<'a> {
                 visited,
                 layout,
                 immutable,
+                snap,
+                snap_step,
             };
             content(&mut ctx, ui);
         }
@@ -980,8 +1107,13 @@ fn graph_interaction(
 }
 
 // Paint a subtle dot grid to check camera movement.
-fn paint_dot_grid(visible_rect: egui::Rect, ui: &mut egui::Ui) {
-    let dot_step = dot_grid_step(ui.spacing().interact_size.y, visible_rect);
+fn paint_dot_grid(visible_rect: egui::Rect, base_step: Option<f32>, ui: &mut egui::Ui) {
+    // Fall back to the style's interaction size, ignoring a non-positive or
+    // non-finite override (which would produce a degenerate, unbounded grid).
+    let base = base_step
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or_else(|| ui.spacing().interact_size.y);
+    let dot_step = dot_grid_step(base, visible_rect);
     let color = ui.style().noninteractive().bg_stroke.color;
     let x_dots = (visible_rect.min.x / dot_step) as i32..=(visible_rect.max.x / dot_step) as i32;
     let y_dots = (visible_rect.min.y / dot_step) as i32..=(visible_rect.max.y / dot_step) as i32;
@@ -1092,6 +1224,30 @@ fn maintain_zoom_scene_rect(
     egui::Rect::from_center_size(scene_rect.center(), cur / scale)
 }
 
+/// Snap a scalar to a multiple of `step` according to `snap`.
+///
+/// A non-positive or non-finite `step`, or a non-finite input, is returned
+/// unchanged so a bad step can't poison the layout with `NaN`.
+pub fn snap_f32(snap: Snap, step: f32, v: f32) -> f32 {
+    if !v.is_finite() || !step.is_finite() || step <= 0.0 {
+        return v;
+    }
+    match snap {
+        Snap::Round => (v / step).round() * step,
+        Snap::Floor => (v / step).floor() * step,
+    }
+}
+
+/// Snap each axis of a position to a multiple of `step`. See [`snap_f32`].
+pub fn snap_pos(snap: Snap, step: f32, p: egui::Pos2) -> egui::Pos2 {
+    egui::pos2(snap_f32(snap, step, p.x), snap_f32(snap, step, p.y))
+}
+
+/// Snap each axis of a vector to a multiple of `step`. See [`snap_f32`].
+pub fn snap_vec(snap: Snap, step: f32, v: egui::Vec2) -> egui::Vec2 {
+    egui::vec2(snap_f32(snap, step, v.x), snap_f32(snap, step, v.y))
+}
+
 /// Short-hand for retrieving access to the graph's temporary memory from the `Ui`.
 fn memory(ui: &egui::Ui, graph_id: egui::Id) -> Arc<Mutex<GraphTempMemory>> {
     ui.ctx().data_mut(|d| {
@@ -1102,7 +1258,7 @@ fn memory(ui: &egui::Ui, graph_id: egui::Id) -> Arc<Mutex<GraphTempMemory>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dot_grid_step, maintain_zoom_scene_rect};
+    use super::{dot_grid_step, maintain_zoom_scene_rect, snap_f32, Snap};
     use egui::{Rangef, Rect, Vec2};
 
     /// The scale egui's `Scene` would apply when fitting `scene_rect` into a
@@ -1185,5 +1341,42 @@ mod tests {
         // Degenerate rects stay harmless.
         let inf = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(f32::INFINITY, 100.0));
         assert!(dot_grid_step(base, inf) > 0.0);
+    }
+
+    #[test]
+    fn snap_round_and_floor() {
+        assert_eq!(snap_f32(Snap::Round, 1.0, 2.4), 2.0);
+        assert_eq!(snap_f32(Snap::Round, 1.0, 2.6), 3.0);
+        assert_eq!(snap_f32(Snap::Floor, 1.0, 2.9), 2.0);
+        // Negatives floor toward negative infinity.
+        assert_eq!(snap_f32(Snap::Floor, 1.0, -0.1), -1.0);
+        assert_eq!(snap_f32(Snap::Round, 1.0, -0.4), 0.0);
+        // Coarser steps.
+        assert_eq!(snap_f32(Snap::Round, 8.0, 11.0), 8.0);
+        assert_eq!(snap_f32(Snap::Round, 8.0, 13.0), 16.0);
+        assert_eq!(snap_f32(Snap::Floor, 8.0, 15.0), 8.0);
+    }
+
+    #[test]
+    fn snap_is_idempotent() {
+        for &mode in &[Snap::Round, Snap::Floor] {
+            for &step in &[1.0_f32, 8.0] {
+                for &v in &[2.4_f32, 2.6, -0.1, 13.0, 100.49] {
+                    let once = snap_f32(mode, step, v);
+                    assert_eq!(snap_f32(mode, step, once), once);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snap_guards_bad_inputs() {
+        // Non-positive or non-finite step returns the input unchanged.
+        assert_eq!(snap_f32(Snap::Round, 0.0, 3.7), 3.7);
+        assert_eq!(snap_f32(Snap::Round, -1.0, 3.7), 3.7);
+        assert_eq!(snap_f32(Snap::Round, f32::NAN, 3.7), 3.7);
+        // Non-finite input passes straight through.
+        assert!(snap_f32(Snap::Round, 1.0, f32::INFINITY).is_infinite());
+        assert!(snap_f32(Snap::Round, 1.0, f32::NAN).is_nan());
     }
 }

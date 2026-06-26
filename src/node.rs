@@ -60,7 +60,7 @@ pub struct NodeResponse<T> {
 /// The response returned by [`NodeCtx::framed`] and [`NodeCtx::framed_with`].
 ///
 /// Carries the content's [`egui::InnerResponse`] alongside the
-/// [`SocketLayout`] describing socket positions for this node.
+/// [`SocketLayout`](crate::SocketLayout) describing socket positions for this node.
 pub struct FramedResponse<T> {
     pub inner: egui::InnerResponse<T>,
     pub sockets: crate::SocketLayout,
@@ -209,6 +209,8 @@ impl Node {
         ui: &mut egui::Ui,
         content: Box<dyn FnOnce(NodeCtx<'_>) -> FramedResponse<R> + 'a>,
     ) -> NodeResponse<R> {
+        let snap = ctx.snap;
+        let snap_step = ctx.snap_step;
         let layout = &mut ctx.layout;
 
         // Indicate that we've visited this node this update.
@@ -225,7 +227,12 @@ impl Node {
                     pos = ptr;
                 }
             }
-            egui::Pos2::new(pos.x, pos.y)
+            // Snap the initial position so a freshly-spawned node is aligned on
+            // its very first frame (later frames are snapped in `Graph::show`).
+            match snap {
+                Some(snap) => crate::snap_pos(snap, snap_step, pos),
+                None => pos,
+            }
         });
 
         // Interpolate toward the desired position over time for auto-layout.
@@ -389,7 +396,14 @@ impl Node {
         {
             let gmem_arc = crate::memory(ui, ctx.graph_id);
             let mut gmem = gmem_arc.lock().expect("failed to lock graph temp memory");
-            gmem.node_sizes.insert(self.id, response.rect.size());
+            // Snap the recorded size so auto-layout and selection see tidy
+            // values. Sizes always round (never floor) so they can't shrink
+            // below the rendered frame and break hit-testing or packing.
+            let size = match snap {
+                Some(_) => crate::snap_vec(crate::Snap::Round, snap_step, response.rect.size()),
+                None => response.rect.size(),
+            };
+            gmem.node_sizes.insert(self.id, size);
 
             let ctrl_down = ui.input(|i| i.modifiers.ctrl);
 
@@ -655,7 +669,7 @@ impl<'a> NodeCtx<'a> {
     /// - Is used by [`Node::show`] for selection and drag handling.
     ///
     /// The content closure receives a `&mut SocketLayout` which can be used to
-    /// register explicit socket positions (e.g. via [`SocketLayout::row`]).
+    /// register explicit socket positions (e.g. via [`SocketLayout::row`](crate::SocketLayout::row)).
     /// If left unmodified, sockets are evenly spaced along the node edge.
     ///
     /// For custom frame styling, use [`NodeCtx::framed_with`].
@@ -678,7 +692,7 @@ impl<'a> NodeCtx<'a> {
     /// - Is used by [`Node::show`] for selection and drag handling.
     ///
     /// The content closure receives a `&mut SocketLayout` which can be used to
-    /// register explicit socket positions (e.g. via [`SocketLayout::row`]).
+    /// register explicit socket positions (e.g. via [`SocketLayout::row`](crate::SocketLayout::row)).
     /// If left unmodified, sockets are evenly spaced along the node edge.
     ///
     /// For default frame styling, use [`NodeCtx::framed`].
