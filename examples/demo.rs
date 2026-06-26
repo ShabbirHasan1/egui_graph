@@ -66,6 +66,11 @@ struct State {
     immutable: bool,
     snap_mode: SnapMode,
     grid_step: f32,
+    align: bool,
+    align_edges: bool,
+    align_centers: bool,
+    align_threshold: f32,
+    align_guides: bool,
 }
 
 #[derive(Default)]
@@ -138,6 +143,11 @@ impl App {
             snap_mode: SnapMode::Point,
             // Matches the dot grid's previous default (style interact_size.y).
             grid_step: 18.0,
+            align: true,
+            align_edges: true,
+            align_centers: false,
+            align_threshold: 5.0,
+            align_guides: true,
         };
         let view = Default::default();
         App { view, state }
@@ -338,6 +348,13 @@ fn graph(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut State) {
             _ => 1.0,
         })
         .dot_grid_step(state.grid_step)
+        .align(state.align)
+        .align_targets(egui_graph::AlignTargets {
+            edges: state.align_edges,
+            centers: state.align_centers,
+        })
+        .align_threshold(state.align_threshold)
+        .align_guides(state.align_guides)
         .show(view, ui, |ui, show| {
             show.nodes(ui, |nctx, ui| nodes(nctx, ui, state))
                 .edges(ui, |ectx, ui| {
@@ -638,6 +655,19 @@ fn graph_config(ui: &mut egui::Ui, view: &mut egui_graph::View, state: &mut Stat
             ui.horizontal(|ui| {
                 ui.label("Step:");
                 ui.add(egui::DragValue::new(&mut state.grid_step).range(1.0..=200.0));
+            });
+
+            ui.add_space(8.0);
+            ui.label("ALIGN CONFIG");
+            ui.checkbox(&mut state.align, "Snap-align (hold Alt to disable)");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut state.align_edges, "Edges");
+                ui.checkbox(&mut state.align_centers, "Centers");
+                ui.checkbox(&mut state.align_guides, "Guides");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Threshold (px):");
+                ui.add(egui::DragValue::new(&mut state.align_threshold).range(0.0..=50.0));
             });
 
             ui.add_space(8.0);
