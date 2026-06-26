@@ -7,7 +7,12 @@ use std::collections::{HashMap, HashSet};
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
-    let options = eframe::NativeOptions::default();
+    let mut options = eframe::NativeOptions::default();
+    // The default `AutoVsync` (Fifo) present mode can present unevenly on some
+    // platforms (notably Wayland). `AutoNoVsync` prefers `Mailbox` for
+    // low-latency, tear-free presentation and falls back to `Immediate` where
+    // Mailbox is unavailable, so it stays robust across surfaces.
+    options.wgpu_options.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
     let name = "`egui_graph` demo";
     eframe::run_native(name, options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
