@@ -60,7 +60,7 @@ pub struct NodeResponse<T> {
 /// The response returned by [`NodeCtx::framed`] and [`NodeCtx::framed_with`].
 ///
 /// Carries the content's [`egui::InnerResponse`] alongside the
-/// [`SocketLayout`] describing socket positions for this node.
+/// [`SocketLayout`](crate::SocketLayout) describing socket positions for this node.
 pub struct FramedResponse<T> {
     pub inner: egui::InnerResponse<T>,
     pub sockets: crate::SocketLayout,
@@ -669,7 +669,7 @@ impl<'a> NodeCtx<'a> {
     /// - Is used by [`Node::show`] for selection and drag handling.
     ///
     /// The content closure receives a `&mut SocketLayout` which can be used to
-    /// register explicit socket positions (e.g. via [`SocketLayout::row`]).
+    /// register explicit socket positions (e.g. via [`SocketLayout::row`](crate::SocketLayout::row)).
     /// If left unmodified, sockets are evenly spaced along the node edge.
     ///
     /// For custom frame styling, use [`NodeCtx::framed_with`].
@@ -692,7 +692,7 @@ impl<'a> NodeCtx<'a> {
     /// - Is used by [`Node::show`] for selection and drag handling.
     ///
     /// The content closure receives a `&mut SocketLayout` which can be used to
-    /// register explicit socket positions (e.g. via [`SocketLayout::row`]).
+    /// register explicit socket positions (e.g. via [`SocketLayout::row`](crate::SocketLayout::row)).
     /// If left unmodified, sockets are evenly spaced along the node edge.
     ///
     /// For default frame styling, use [`NodeCtx::framed`].

@@ -343,7 +343,7 @@ impl Graph {
         self
     }
 
-    /// Set the maximum size of the scene's inner [`Ui`] that will be created.
+    /// Set the maximum size of the scene's inner [`Ui`](egui::Ui) that will be created.
     #[inline]
     pub fn max_inner_size(mut self, max_inner_size: impl Into<egui::Vec2>) -> Self {
         self.max_inner_size = Some(max_inner_size.into());
