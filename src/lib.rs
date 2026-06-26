@@ -159,6 +159,13 @@ pub struct GraphTempMemory {
     ///
     /// Always `Some` while the pointer is over the graph area, `None` otherwise.
     closest_socket: Option<socket::Socket>,
+    /// Whether the pointer was over any node frame during the previous frame.
+    ///
+    /// Node frames are sublayers that win egui's hit-test over the scene, so the
+    /// scene response reports "not hovered" while the pointer is over a node.
+    /// This lets socket detection still treat node frames as part of the graph
+    /// (e.g. releasing an edge over a socket that straddles a frame edge).
+    ptr_over_node: bool,
     /// The most recently observed available viewport size.
     ///
     /// Used to preserve the zoom level across viewport resizes; see
@@ -640,6 +647,12 @@ impl Graph {
             // Reset the selection dirty flag for this frame.
             gmem.selection.changed = false;
 
+            // Take the previous frame's "pointer over a node frame" flag (it is
+            // re-accumulated from each node's `contains_pointer()` as the nodes
+            // draw) so socket detection can treat node frames as part of the
+            // graph - see the `closest_socket` gate below.
+            let ptr_over_node_prev = std::mem::take(&mut gmem.ptr_over_node);
+
             // FIXME: Here we grab the global pointer and transform its position
             // to the graph scene space in order to check for initialising node
             // drag events. However, doing this means we run the risk of
@@ -655,10 +668,17 @@ impl Graph {
                     .unwrap_or_default()
                     .mul_pos(ptr_global);
 
-                // Check for the closest socket.
-                closest_socket = ui.response().hover_pos().and_then(|pos| {
-                    find_closest_socket(pos, layout, &gmem, ui).map(|(socket, _dist_sqrd)| socket)
-                });
+                // Check for the closest socket. Use the raw graph-space pointer
+                // (the scene's `hover_pos()` is `None` over a node frame) gated on
+                // the pointer being over the scene background *or* a node frame, so
+                // sockets straddling a frame edge are detectable from either side.
+                let ptr_over_graph = ptr_on_graph || ptr_over_node_prev;
+                closest_socket = if ptr_over_graph {
+                    find_closest_socket(ptr_graph, layout, &gmem, ui)
+                        .map(|(socket, _dist_sqrd)| socket)
+                } else {
+                    None
+                };
 
                 // When immutable, suppress socket presses (map to Select).
                 let closest_socket_for_interaction =
