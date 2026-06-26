@@ -21,6 +21,9 @@ pub mod socket;
 pub struct Graph {
     background: bool,
     dot_grid: bool,
+    /// The base spacing of the dot grid in graph-space units, or `None` to
+    /// derive it from the style's interaction size.
+    dot_grid_step: Option<f32>,
     zoom_range: egui::Rangef,
     max_inner_size: Option<egui::Vec2>,
     center_view: bool,
@@ -288,6 +291,7 @@ impl Graph {
         Self {
             background: true,
             dot_grid: true,
+            dot_grid_step: None,
             zoom_range: Self::DEFAULT_ZOOM_RANGE,
             max_inner_size: None,
             center_view: Self::DEFAULT_CENTER_VIEW,
@@ -309,6 +313,23 @@ impl Graph {
     /// Whether or not to show the dot grid. Default is `true`.
     pub fn dot_grid(mut self, show: bool) -> Self {
         self.dot_grid = show;
+        self
+    }
+
+    /// The base spacing of the dot grid, in graph-space units.
+    ///
+    /// The grid is anchored at the origin `(0, 0)` and coarsens in power-of-two
+    /// multiples when zoomed far out (to bound the dots painted per frame).
+    /// Both the dot grid and [`snap`][Self::snap] are anchored at the origin,
+    /// so setting this equal to (or an integer multiple of) [`snap_step`] makes
+    /// snapped nodes land on the grid. The two remain independent - neither is
+    /// derived from the other.
+    ///
+    /// Default: `None`, deriving the spacing from the style's interaction size.
+    ///
+    /// [`snap_step`]: Self::snap_step
+    pub fn dot_grid_step(mut self, step: f32) -> Self {
+        self.dot_grid_step = Some(step);
         self
     }
 
@@ -567,7 +588,7 @@ impl Graph {
 
             // Paint some subtle dots to check camera movement.
             if self.dot_grid {
-                paint_dot_grid(visible_rect, ui);
+                paint_dot_grid(visible_rect, self.dot_grid_step, ui);
             }
 
             // Draw the selection area if there is one.
@@ -1086,8 +1107,13 @@ fn graph_interaction(
 }
 
 // Paint a subtle dot grid to check camera movement.
-fn paint_dot_grid(visible_rect: egui::Rect, ui: &mut egui::Ui) {
-    let dot_step = dot_grid_step(ui.spacing().interact_size.y, visible_rect);
+fn paint_dot_grid(visible_rect: egui::Rect, base_step: Option<f32>, ui: &mut egui::Ui) {
+    // Fall back to the style's interaction size, ignoring a non-positive or
+    // non-finite override (which would produce a degenerate, unbounded grid).
+    let base = base_step
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or_else(|| ui.spacing().interact_size.y);
+    let dot_step = dot_grid_step(base, visible_rect);
     let color = ui.style().noninteractive().bg_stroke.color;
     let x_dots = (visible_rect.min.x / dot_step) as i32..=(visible_rect.max.x / dot_step) as i32;
     let y_dots = (visible_rect.min.y / dot_step) as i32..=(visible_rect.max.y / dot_step) as i32;
