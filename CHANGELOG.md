@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/nannou-org/egui_graph/compare/v0.16.0...v0.16.1) - 2026-06-27
+
+### Added
+
+- add align_nodes to align a selection onto an inferred axis
+- draw subtle alignment guide lines while dragging
+- snap-align dragged nodes to other nodes' edges/centers
+- *(example)* add snap-mode and grid-step controls to demo
+- expose configurable dot grid step
+- snap node positions and frame sizes to graph units
+
+### Fixed
+
+- complete edge when released over a node frame
+- keep selected node groups rigid when snapping during a drag
+- *(example)* use AutoNoVsync present mode in demo
+
+### Other
+
+- deny rustdoc warnings and fix unresolved doc links
+
 ## [0.16.0](https://github.com/nannou-org/egui_graph/compare/v0.15.0...v0.16.0) - 2026-06-18
 
 ### Added
